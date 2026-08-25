@@ -24,6 +24,11 @@ namespace ChoSim
             MctsFindsWinBySameSidePath();
             MctsFindsWinAcrossHandover();
             MctsBeatsRandom();
+            FeaturesMirrorInvariance();
+            FeaturesCornerGeometry();
+            FeaturesPlaneCounts();
+            FeaturesMoveIndexRoundTrip();
+            PositionCodecRoundTrip();
 
             Console.WriteLine();
             Console.WriteLine($"{_passed} passed, {_failed} failed");
@@ -128,6 +133,284 @@ namespace ChoSim
             }
 
             Check("wins at least 3 of 4 against random", wins >= 3, $"won {wins}/{played}");
+        }
+
+        // -------------------------------------------------------- features
+
+        /// <summary>
+        /// Builds the colour-swapped, vertically-flipped twin of a position. Written here
+        /// independently of SimFeatures' own flip so the invariance test cannot be circular.
+        /// </summary>
+        static SimState Mirror(SimState s)
+        {
+            var m = new SimState(s.boardWidth, s.boardHeight);
+
+            for (int x = 0; x < s.boardWidth; x++)
+                for (int y = 0; y < s.boardHeight; y++)
+                {
+                    var sp = s.squares[x, y];
+                    if (!sp.HasValue) continue;
+                    var p = sp.Value;
+                    p.color = p.color == PieceColor.White ? PieceColor.Black : PieceColor.White;
+                    m.squares[x, s.boardHeight - 1 - y] = p;
+                }
+
+            for (int ix = 0; ix < s.intersectionWidth; ix++)
+                for (int iy = 0; iy < s.intersectionHeight; iy++)
+                {
+                    var c = s.stones[ix, iy];
+                    if (c == SimStoneColor.None) continue;
+                    m.stones[ix, s.intersectionHeight - 1 - iy] =
+                        c == SimStoneColor.White ? SimStoneColor.Black : SimStoneColor.White;
+                }
+
+            m.currentPlayer = s.currentPlayer == PieceColor.White ? PieceColor.Black : PieceColor.White;
+            m.phaseOne = s.phaseOne;
+            m.waitingForTerritoryClick = s.waitingForTerritoryClick;
+            m.waitingForPawnStoneChoice = s.waitingForPawnStoneChoice;
+            m.noProgressTurns = s.noProgressTurns;
+
+            if (s.goKoPoint.HasValue)
+                m.goKoPoint = new Vector2Int(s.goKoPoint.Value.x,
+                                             s.intersectionHeight - 1 - s.goKoPoint.Value.y);
+            if (s.lastMovedSquare.HasValue)
+                m.lastMovedSquare = new Vector2Int(s.lastMovedSquare.Value.x,
+                                                   s.boardHeight - 1 - s.lastMovedSquare.Value.y);
+            return m;
+        }
+
+        static SimState SamplePosition(int plies, int seed)
+        {
+            var s = Positions.Create(Variant.Small);
+            var rng = new RandomAgent(seed);
+            for (int i = 0; i < plies && !s.gameOver; i++) Driver.Step(s, rng, out _);
+            return s;
+        }
+
+        static void FeaturesMirrorInvariance()
+        {
+            Console.WriteLine("features: canonicalisation");
+
+            int mismatches = 0, tested = 0;
+            for (int seed = 1; seed <= 6; seed++)
+            {
+                var a = SamplePosition(9 + seed, seed);
+                var b = Mirror(a);
+
+                var pa = new float[SimFeatures.TensorSize(a)];
+                var pb = new float[SimFeatures.TensorSize(b)];
+                SimFeatures.Encode(a, pa);
+                SimFeatures.Encode(b, pb);
+
+                tested++;
+                for (int i = 0; i < pa.Length; i++)
+                    if (Math.Abs(pa[i] - pb[i]) > 1e-6f) { mismatches++; break; }
+            }
+
+            Check("a position and its mirror encode identically", mismatches == 0,
+                  $"{mismatches}/{tested} positions differed");
+        }
+
+        static void FeaturesCornerGeometry()
+        {
+            Console.WriteLine("features: 2x2 corner geometry");
+
+            // Black to move, so the flip is exercised rather than bypassed.
+            var s = new SimState(5, 6);
+            s.currentPlayer = PieceColor.Black;
+            s.phaseOne = true;
+            s.squares[2, 2] = new SimPiece { color = PieceColor.White, type = PieceType.Queen };
+            s.stones[2, 2] = SimStoneColor.Black;
+            s.stones[3, 2] = SimStoneColor.Black;
+            s.stones[2, 3] = SimStoneColor.Black;
+            s.stones[3, 3] = SimStoneColor.Black;
+
+            int W = s.intersectionWidth, H = s.intersectionHeight, stride = H * W;
+            var planes = new float[SimFeatures.TensorSize(s)];
+            SimFeatures.Encode(s, planes);
+
+            float At(int plane, int cx, int cy) => planes[plane * stride + cy * W + cx];
+
+            SimFeatures.MapSquare(s, 2, 2, out int qx, out int qy);
+
+            // The queen belongs to the opponent (Black is to move).
+            Check("piece lands on its canonical cell",
+                  At(SimFeatures.OppPieces + (int)PieceType.Queen, qx, qy) == 1f);
+
+            // Its four corners are exactly the 2x2 block anchored at that same cell.
+            bool block = At(SimFeatures.OwnStones, qx,     qy)     == 1f
+                      && At(SimFeatures.OwnStones, qx + 1, qy)     == 1f
+                      && At(SimFeatures.OwnStones, qx,     qy + 1) == 1f
+                      && At(SimFeatures.OwnStones, qx + 1, qy + 1) == 1f;
+            Check("its four corners form the 2x2 block above it", block);
+
+            // Four corners means the surround is complete, so no partial-pressure plane fires.
+            bool noPartial = At(SimFeatures.SurroundPress + 0, qx, qy) == 0f
+                          && At(SimFeatures.SurroundPress + 1, qx, qy) == 0f
+                          && At(SimFeatures.SurroundPress + 2, qx, qy) == 0f;
+            Check("a complete surround sets no partial-pressure plane", noPartial);
+            Check("the square reads as opponent territory",
+                  At(SimFeatures.OwnTerritory, qx, qy) == 1f);
+        }
+
+        static void FeaturesPlaneCounts()
+        {
+            Console.WriteLine("features: plane totals match the board");
+
+            var s = SamplePosition(15, 4);
+            int W = s.intersectionWidth, H = s.intersectionHeight, stride = H * W;
+            var planes = new float[SimFeatures.TensorSize(s)];
+            SimFeatures.Encode(s, planes);
+
+            float Sum(int plane)
+            {
+                float t = 0;
+                for (int i = 0; i < stride; i++) t += planes[plane * stride + i];
+                return t;
+            }
+
+            int ownPieces = 0, oppPieces = 0, ownStones = 0, oppStones = 0;
+            var ownStoneColor = s.currentPlayer == PieceColor.White ? SimStoneColor.White : SimStoneColor.Black;
+
+            for (int x = 0; x < s.boardWidth; x++)
+                for (int y = 0; y < s.boardHeight; y++)
+                {
+                    var sp = s.squares[x, y];
+                    if (!sp.HasValue) continue;
+                    if (sp.Value.color == s.currentPlayer) ownPieces++; else oppPieces++;
+                }
+
+            for (int ix = 0; ix < W; ix++)
+                for (int iy = 0; iy < H; iy++)
+                {
+                    var c = s.stones[ix, iy];
+                    if (c == SimStoneColor.None) continue;
+                    if (c == ownStoneColor) ownStones++; else oppStones++;
+                }
+
+            float ownPieceSum = 0, oppPieceSum = 0;
+            for (int t = 0; t < 6; t++)
+            {
+                ownPieceSum += Sum(SimFeatures.OwnPieces + t);
+                oppPieceSum += Sum(SimFeatures.OppPieces + t);
+            }
+
+            Check("own piece planes total the own pieces", ownPieceSum == ownPieces, $"{ownPieceSum} vs {ownPieces}");
+            Check("opponent piece planes total theirs", oppPieceSum == oppPieces, $"{oppPieceSum} vs {oppPieces}");
+            Check("own stone plane totals the own stones", Sum(SimFeatures.OwnStones) == ownStones, $"{Sum(SimFeatures.OwnStones)} vs {ownStones}");
+            Check("opponent stone plane totals theirs", Sum(SimFeatures.OppStones) == oppStones, $"{Sum(SimFeatures.OppStones)} vs {oppStones}");
+
+            // Every stone belongs to exactly one liberty bucket.
+            float ownLib = Sum(SimFeatures.OwnLiberties) + Sum(SimFeatures.OwnLiberties + 1) + Sum(SimFeatures.OwnLiberties + 2);
+            Check("every own stone lands in one liberty bucket", ownLib == ownStones, $"{ownLib} vs {ownStones}");
+
+            // Exactly one phase plane is on.
+            float phases = Sum(SimFeatures.PhaseChess) + Sum(SimFeatures.PhaseTerritory)
+                         + Sum(SimFeatures.PhaseBonus) + Sum(SimFeatures.PhaseMainStone);
+            Check("exactly one phase plane is set", Math.Abs(phases - stride) < 1e-4f, $"{phases} vs {stride}");
+        }
+
+        static void FeaturesMoveIndexRoundTrip()
+        {
+            Console.WriteLine("features: policy index round-trip");
+
+            int checkedMoves = 0, bad = 0;
+
+            for (int seed = 1; seed <= 8; seed++)
+            {
+                var s = SamplePosition(7 + seed, seed);
+                if (s.gameOver) continue;
+
+                var moves = SimRules.GenerateAllLegalFullTurns(s);
+                foreach (var m in moves)
+                {
+                    int idx = SimFeatures.PolicyIndex(s, m);
+                    if (idx < 0) { bad++; continue; }
+                    checkedMoves++;
+
+                    if (m.chessMove.HasValue)
+                    {
+                        int squares = s.boardWidth * s.boardHeight;
+                        var from = SimFeatures.SquareFromIndex(s, idx / squares);
+                        var to = SimFeatures.SquareFromIndex(s, idx % squares);
+                        if (from != m.chessMove.Value.from || to != m.chessMove.Value.to) bad++;
+                        if (idx >= SimFeatures.ChessPolicySize(s)) bad++;
+                    }
+                    else
+                    {
+                        var pt = m.mainStone.HasValue ? m.mainStone.Value.intersection
+                               : m.bonusPawnStone.HasValue ? m.bonusPawnStone.Value.intersection
+                               : m.territoryRemoval.Value.intersection;
+                        if (SimFeatures.IntersectionFromIndex(s, idx) != pt) bad++;
+                        if (idx >= SimFeatures.IntersectionPolicySize(s)) bad++;
+                    }
+                }
+            }
+
+            Check("every legal move round-trips through its index", bad == 0 && checkedMoves > 100,
+                  $"{bad} bad out of {checkedMoves} moves");
+        }
+
+        static void PositionCodecRoundTrip()
+        {
+            Console.WriteLine("codec: position round-trip");
+
+            int tested = 0, fieldMismatch = 0, moveMismatch = 0, planeMismatch = 0;
+
+            for (int seed = 1; seed <= 10; seed++)
+            {
+                var a = SamplePosition(6 + seed * 2, seed);
+                var b = PositionCodec.Decode(PositionCodec.Encode(a));
+                tested++;
+
+                bool same = a.boardWidth == b.boardWidth && a.boardHeight == b.boardHeight
+                         && a.currentPlayer == b.currentPlayer
+                         && a.phaseOne == b.phaseOne
+                         && a.waitingForTerritoryClick == b.waitingForTerritoryClick
+                         && a.waitingForPawnStoneChoice == b.waitingForPawnStoneChoice
+                         && a.goKoPoint == b.goKoPoint
+                         && a.lastMovedSquare == b.lastMovedSquare
+                         && a.noProgressTurns == b.noProgressTurns
+                         && a.whiteCanCastleKingSide == b.whiteCanCastleKingSide
+                         && a.whiteCanCastleQueenSide == b.whiteCanCastleQueenSide
+                         && a.blackCanCastleKingSide == b.blackCanCastleKingSide
+                         && a.blackCanCastleQueenSide == b.blackCanCastleQueenSide;
+
+                for (int x = 0; x < a.boardWidth && same; x++)
+                    for (int y = 0; y < a.boardHeight && same; y++)
+                    {
+                        var pa = a.squares[x, y];
+                        var pb = b.squares[x, y];
+                        if (pa.HasValue != pb.HasValue) { same = false; break; }
+                        if (!pa.HasValue) continue;
+                        if (pa.Value.color != pb.Value.color || pa.Value.type != pb.Value.type
+                            || pa.Value.hasMoved != pb.Value.hasMoved
+                            || pa.Value.justDoubleStepped != pb.Value.justDoubleStepped) same = false;
+                    }
+
+                for (int ix = 0; ix < a.intersectionWidth && same; ix++)
+                    for (int iy = 0; iy < a.intersectionHeight && same; iy++)
+                        if (a.stones[ix, iy] != b.stones[ix, iy]) { same = false; break; }
+
+                if (!same) { fieldMismatch++; continue; }
+
+                // Everything the generator reads must survive, or the policy targets would be
+                // attached to a different move list than the trainer reconstructs.
+                var ma = SimRules.GenerateAllLegalFullTurns(a, applySuperko: false);
+                var mb = SimRules.GenerateAllLegalFullTurns(b, applySuperko: false);
+                if (ma.Count != mb.Count) { moveMismatch++; continue; }
+
+                var ta = new float[SimFeatures.TensorSize(a)];
+                var tb = new float[SimFeatures.TensorSize(b)];
+                SimFeatures.Encode(a, ta);
+                SimFeatures.Encode(b, tb);
+                for (int i = 0; i < ta.Length; i++)
+                    if (Math.Abs(ta[i] - tb[i]) > 1e-6f) { planeMismatch++; break; }
+            }
+
+            Check("every field survives encode/decode", fieldMismatch == 0, $"{fieldMismatch}/{tested}");
+            Check("legal moves are identical after a round-trip", moveMismatch == 0, $"{moveMismatch}/{tested}");
+            Check("planes are identical after a round-trip", planeMismatch == 0, $"{planeMismatch}/{tested}");
         }
 
         static void Check(string name, bool ok, string detail = "")

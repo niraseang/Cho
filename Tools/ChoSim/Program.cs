@@ -22,6 +22,8 @@ namespace ChoSim
                 case "match":     Match(args); return 0;
                 case "profile":   Profile(args); return 0;
                 case "selftest":  return SelfTest.Run();
+                case "selfplay":  return SelfPlayCmd(args);
+                case "inspect":   return SelfPlay.Inspect(args.Str("in", "selfplay.bin"));
                 default:          Help(); return 0;
             }
         }
@@ -42,6 +44,13 @@ namespace ChoSim
 
   bench      [--depth D] [--plies N] [--time MS] [--seed S] [--agent legacy|search]
              Search from a position at depths 1..D. Reports nodes, nodes/sec, best move.
+
+  selfplay   [--games G] [--sims S] [--out FILE] [--seed S] [--temp N] [--quiet]
+             Generate training data with MCTS. --temp is how many opening decisions
+             are sampled by visit count rather than played greedily.
+
+  inspect    [--in FILE]
+             Read a self-play file back, decode every position and re-derive planes.
 
   selftest
              Assert the recently changed rules: no-progress draw, superko, suicide.
@@ -244,6 +253,18 @@ namespace ChoSim
                 case "search": return new SearchAgent(cfg);
                 default: throw new ArgumentException($"unknown agent kind '{kind}'");
             }
+        }
+
+        static int SelfPlayCmd(Args a)
+        {
+            return SelfPlay.Run(
+                games: a.Int("games", 10),
+                sims: a.Int("sims", 200),
+                variant: VariantOf(a),
+                outPath: a.Str("out", "selfplay.bin"),
+                seed: a.Int("seed", 1),
+                openingTemperatureDecisions: a.Int("temp", 12),
+                quiet: a.Bool("quiet", false)) > 0 ? 0 : 1;
         }
 
         static void Match(Args a)
