@@ -67,6 +67,8 @@ namespace ChoSim
 
   match      [--a SPEC] [--b SPEC] [--games G] [--turns T] [--seed S] [--openings N]
              [--superko true|false] [--noprogress N]   (N=0 disables the draw rule)
+             [--agoquiesce / --bgoquiesce true|false]  per-side: does quiescence
+             follow piece-taking stones (default true for both)
              SPEC kinds: search / legacy / random / mcts. For mcts the number is
              simulations per decision, not depth (e.g. mcts:400).
              Self-play A/B. SPEC is kind:depth, kind in {search, legacy, random}.
@@ -244,13 +246,13 @@ namespace ChoSim
 
         // ---------------------------------------------------------------- match
 
-        static IAgent MakeAgent(string spec, int seed)
+        static IAgent MakeAgent(string spec, int seed, bool goQuiesce = true)
         {
             var parts = spec.Split(':');
             string kind = parts[0].ToLowerInvariant();
             int depth = parts.Length > 1 ? int.Parse(parts[1], CultureInfo.InvariantCulture) : 4;
 
-            var cfg = new AgentConfig { Name = spec, Depth = depth };
+            var cfg = new AgentConfig { Name = spec, Depth = depth, GoAwareQuiescence = goQuiesce };
 
             switch (kind)
             {
@@ -288,7 +290,10 @@ namespace ChoSim
             // Termination rules can be switched off to isolate their effect.
             SimRules.superkoEnabled = a.Bool("superko", true);
             SimRules.noProgressTurnLimit = a.Int("noprogress", 50);
+            bool aQuiesce = a.Bool("agoquiesce", a.Bool("goquiesce", true));
+            bool bQuiesce = a.Bool("bgoquiesce", a.Bool("goquiesce", true));
             Console.WriteLine($"rules: superko={SimRules.superkoEnabled} noProgressLimit={SimRules.noProgressTurnLimit}");
+            Console.WriteLine($"goAwareQuiescence: A={aQuiesce} B={bQuiesce}");
 
             Console.WriteLine($"variant: {variant}");
             Console.WriteLine($"match: A={specA}  B={specB}   {games} games, <={turns} turns, {openings} random opening decisions");
@@ -300,8 +305,8 @@ namespace ChoSim
             for (int g = 0; g < games; g++)
             {
                 bool aIsWhite = (g % 2) == 0;
-                var agentA = MakeAgent(specA, seed + g);
-                var agentB = MakeAgent(specB, seed + g + 10_000);
+                var agentA = MakeAgent(specA, seed + g, aQuiesce);
+                var agentB = MakeAgent(specB, seed + g + 10_000, bQuiesce);
 
                 var white = aIsWhite ? agentA : agentB;
                 var black = aIsWhite ? agentB : agentA;

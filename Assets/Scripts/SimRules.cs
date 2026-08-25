@@ -27,6 +27,10 @@ public static class SimRules
     public static int kingStartFile = -1;
     public static bool castlingEnabled = true;
 
+    // Whether quiescence follows Go moves that capture a piece. Off reproduces the old
+    // behaviour, where quiescence saw chess captures only.
+    public static bool goAwareQuiescence = true;
+
     public static bool superkoEnabled = true;
 
     // Whether the search also filters superko at interior nodes.
@@ -254,6 +258,60 @@ public static class SimRules
         }
 
         return turns;
+    }
+
+    /// <summary>
+    /// Would a stone placed here complete a four-corner surround and take an enemy piece?
+    ///
+    /// Only the (at most) four squares having this intersection as a corner can be affected,
+    /// so this is a cheap test rather than a copy-and-apply. Used by quiescence, which would
+    /// otherwise stand pat while a stone is about to remove a queen or a king.
+    /// </summary>
+    public static bool PlacementCapturesPiece(SimState state, Vector2Int pt, SimStoneColor color,
+                                              out bool capturesKing, out int capturedValue)
+    {
+        capturesKing = false;
+        capturedValue = 0;
+
+        int ix = pt.x, iy = pt.y;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return false;
+        if (state.stones[ix, iy] != SimStoneColor.None) return false;
+
+        bool any = false;
+
+        for (int i = 0; i < 4; i++)
+        {
+            int sx = ix - (i & 1);
+            int sy = iy - (i >> 1);
+
+            if (sx < 0 || sy < 0 || sx >= state.boardWidth || sy >= state.boardHeight) continue;
+            if (sx + 1 >= state.intersectionWidth || sy + 1 >= state.intersectionHeight) continue;
+
+            var sp = state.squares[sx, sy];
+            if (!sp.HasValue) continue;
+
+            var piece = sp.Value;
+            var pieceStone = piece.color == PieceColor.White ? SimStoneColor.White : SimStoneColor.Black;
+            if (pieceStone == color) continue;   // our own piece; surrounds only take enemies
+
+            int held = 0;
+            for (int c = 0; c < 4; c++)
+            {
+                int cx = sx + (c & 1);
+                int cy = sy + (c >> 1);
+                if (cx == ix && cy == iy) { held++; continue; }   // the stone about to be played
+                if (state.stones[cx, cy] == color) held++;
+            }
+
+            if (held == 4)
+            {
+                any = true;
+                capturedValue += PieceValue(piece.type);
+                if (piece.type == PieceType.King) capturesKing = true;
+            }
+        }
+
+        return any;
     }
 
     /// <summary>

@@ -12,6 +12,10 @@ namespace ChoSim
         public bool UseMobilityEval = true;
         public int MobilityWeight = 2;
 
+        // Per-agent so two configurations can meet head to head in one process; SimRules holds
+        // it as a static, and Knobs.Apply re-applies it before every search.
+        public bool GoAwareQuiescence = true;
+
         public AgentConfig Clone() => (AgentConfig)MemberwiseClone();
         public override string ToString() => $"{Name}(d={Depth})";
     }
@@ -30,6 +34,7 @@ namespace ChoSim
         {
             SimRules.useMobilityEval = cfg.UseMobilityEval;
             SimRules.mobilityWeight = cfg.MobilityWeight;
+            SimRules.goAwareQuiescence = cfg.GoAwareQuiescence;
         }
     }
 

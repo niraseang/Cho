@@ -30,6 +30,7 @@ namespace ChoSim
             FeaturesMoveIndexRoundTrip();
             PositionCodecRoundTrip();
             QueenChainsOrthogonally();
+            PlacementCaptureDetection();
 
             Console.WriteLine();
             Console.WriteLine($"{_passed} passed, {_failed} failed");
@@ -459,6 +460,62 @@ namespace ChoSim
 
             // Sanity: the ordinary first hop is still there.
             Check("still offers the plain first hop", Has(0, 0, 0, 1));
+        }
+
+        /// <summary>The cheap surround test quiescence relies on, against the real rules.</summary>
+        static void PlacementCaptureDetection()
+        {
+            Console.WriteLine("placement capture detection");
+
+            var s = new SimState(5, 6);
+
+            // Black holds three corners of square (2,2); (3,3) completes it.
+            s.squares[2, 2] = new SimPiece { color = PieceColor.White, type = PieceType.Queen };
+            s.stones[2, 2] = SimStoneColor.Black;
+            s.stones[3, 2] = SimStoneColor.Black;
+            s.stones[2, 3] = SimStoneColor.Black;
+
+            bool takes = SimRules.PlacementCapturesPiece(s, new Vector2Int(3, 3), SimStoneColor.Black,
+                                                         out bool king, out int value);
+            Check("detects the completing stone", takes);
+            Check("reports the queen's value", value == 900, $"got {value}");
+            Check("does not claim a king", !king);
+
+            // A different empty point does not complete anything.
+            Check("ignores an unrelated point",
+                  !SimRules.PlacementCapturesPiece(s, new Vector2Int(0, 0), SimStoneColor.Black, out _, out _));
+
+            // White playing the same point cannot capture its own piece.
+            Check("will not capture your own piece",
+                  !SimRules.PlacementCapturesPiece(s, new Vector2Int(3, 3), SimStoneColor.White, out _, out _));
+
+            // With only two corners held there is nothing to complete.
+            var t = new SimState(5, 6);
+            t.squares[2, 2] = new SimPiece { color = PieceColor.White, type = PieceType.King };
+            t.stones[2, 2] = SimStoneColor.Black;
+            t.stones[3, 2] = SimStoneColor.Black;
+            Check("needs three corners already held",
+                  !SimRules.PlacementCapturesPiece(t, new Vector2Int(3, 3), SimStoneColor.Black, out _, out _));
+
+            t.stones[2, 3] = SimStoneColor.Black;
+            Check("flags a king capture",
+                  SimRules.PlacementCapturesPiece(t, new Vector2Int(3, 3), SimStoneColor.Black,
+                                                  out bool k2, out _) && k2);
+
+            // Cross-check against actually playing it, so the fast test cannot drift from the rules.
+            var applied = t.DeepCopy();
+            applied.currentPlayer = PieceColor.Black;
+            applied.phaseOne = false;
+            SimRules.ApplyFullTurn(applied, new SimTurn
+            {
+                mainStone = new SimStonePlacement
+                {
+                    intersection = new Vector2Int(3, 3),
+                    color = SimStoneColor.Black
+                }
+            });
+            Check("agrees with applying the move", applied.gameOver && applied.winner == PieceColor.Black,
+                  $"gameOver={applied.gameOver}");
         }
 
         static void Check(string name, bool ok, string detail = "")

@@ -376,20 +376,47 @@ public static class SimSearch
 
         var captures = new List<SimTurn>();
 
+        // Territory removals and pawn bonus stones are forced sub-decisions: the player cannot
+        // decline them, so standing pat here would score a position that is not actually on
+        // offer. They are capped at four options, so including all of them is cheap.
+        bool forced = state.waitingForTerritoryClick || state.waitingForPawnStoneChoice;
+        if (forced) return all;
+
+        var placingColor = (state.currentPlayer == PieceColor.White)
+            ? SimStoneColor.White
+            : SimStoneColor.Black;
+
         foreach (var t in all)
         {
-            if (!t.chessMove.HasValue) continue;
-            var mv = t.chessMove.Value;
+            if (t.chessMove.HasValue)
+            {
+                var mv = t.chessMove.Value;
 
-            // A capture occurs if the destination square is occupied by an enemy piece.
-            var dest = state.squares[mv.to.x, mv.to.y];
-            if (!dest.HasValue) continue;
+                // A capture occurs if the destination square is occupied by an enemy piece.
+                var dest = state.squares[mv.to.x, mv.to.y];
+                if (!dest.HasValue) continue;
 
-            var mover = state.squares[mv.from.x, mv.from.y];
-            if (!mover.HasValue) continue;
-            if (dest.Value.color == mover.Value.color) continue;
+                var mover = state.squares[mv.from.x, mv.from.y];
+                if (!mover.HasValue) continue;
+                if (dest.Value.color == mover.Value.color) continue;
 
-            captures.Add(t);
+                captures.Add(t);
+                continue;
+            }
+
+            // A stone that completes a four-corner surround takes a piece, and can take the
+            // king. Without this, quiescence returns stand-pat at every Go node and the whole
+            // Go half of the game sits past the horizon.
+            if (!SimRules.goAwareQuiescence) continue;
+
+            var placement = t.mainStone ?? t.bonusPawnStone;
+            if (!placement.HasValue) continue;
+
+            if (SimRules.PlacementCapturesPiece(state, placement.Value.intersection,
+                                                placement.Value.color, out _, out _))
+            {
+                captures.Add(t);
+            }
         }
 
         return captures;
