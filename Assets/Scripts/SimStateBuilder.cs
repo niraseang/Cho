@@ -15,10 +15,11 @@ public static class SimStateBuilder
             return null;
         }
 
+        // The live board is square; SimState takes width and height separately.
         int bs = bm.boardSize;
         int isz = bm.intersectionSize;
 
-        var s = new SimState(bs, isz);
+        var s = new SimState(bs, bs);
 
         // --- Copy chess pieces ---
         for (int x = 0; x < bs; x++)

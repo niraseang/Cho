@@ -4,47 +4,91 @@ using UnityEngine;
 
 namespace ChoSim
 {
-    /// <summary>
-    /// Position construction and rendering for the headless harness.
-    /// Mirrors BoardManager.SetupPieces (White on ranks 0-1, Black on ranks 6-7).
-    /// </summary>
+    public enum Variant
+    {
+        /// <summary>8x8 squares, full chess army. The shipping game.</summary>
+        Standard,
+
+        /// <summary>
+        /// 5x6 squares (6x7 intersections), one of each non-pawn piece plus five pawns.
+        /// Pawns move one square only, and there is no castling. Sized for neural-net
+        /// experiments, where the point is to validate the pipeline quickly.
+        /// </summary>
+        Small
+    }
+
     public static class Positions
     {
-        public const int BoardSize = 8;
-        public const int IntersectionSize = 9;
+        public static SimState Create(Variant variant)
+        {
+            ApplyVariantRules(variant);
+            return variant == Variant.Small ? SmallPosition() : StartPosition();
+        }
+
+        /// <summary>
+        /// Variant rules live on SimRules as statics, so they must be re-applied whenever the
+        /// variant changes within a process.
+        /// </summary>
+        public static void ApplyVariantRules(Variant variant)
+        {
+            bool small = variant == Variant.Small;
+            SimRules.pawnsMayDoubleStep = !small;
+            SimRules.castlingEnabled = !small;
+
+            // R N B Q K puts the king on the last file, not the middle one.
+            SimRules.kingStartFile = small ? 4 : -1;
+        }
 
         public static SimState StartPosition()
         {
-            var s = new SimState(BoardSize, IntersectionSize);
-
             var backRank = new[]
             {
                 PieceType.Rook, PieceType.Knight, PieceType.Bishop, PieceType.Queen,
                 PieceType.King, PieceType.Bishop, PieceType.Knight, PieceType.Rook
             };
+            return Build(8, 8, backRank);
+        }
 
-            for (int x = 0; x < BoardSize; x++)
+        public static SimState SmallPosition()
+        {
+            // One of each non-pawn piece fills a five-wide back rank exactly.
+            // Same arrangement as Gardner's Minichess.
+            var backRank = new[]
+            {
+                PieceType.Rook, PieceType.Knight, PieceType.Bishop,
+                PieceType.Queen, PieceType.King
+            };
+            return Build(5, 6, backRank);
+        }
+
+        static SimState Build(int width, int height, PieceType[] backRank)
+        {
+            if (backRank.Length != width)
+                throw new ArgumentException($"back rank has {backRank.Length} pieces for a {width}-wide board");
+
+            var s = new SimState(width, height);
+
+            for (int x = 0; x < width; x++)
             {
                 Put(s, PieceColor.White, backRank[x], x, 0);
                 Put(s, PieceColor.White, PieceType.Pawn, x, 1);
-                Put(s, PieceColor.Black, backRank[x], x, 7);
-                Put(s, PieceColor.Black, PieceType.Pawn, x, 6);
-            }
+                Put(s, PieceColor.Black, PieceType.Pawn, x, height - 2);
+                Put(s, PieceColor.Black, backRank[x], x, height - 1);
 
-            s.whiteKingSquare = new Vector2Int(4, 0);
-            s.blackKingSquare = new Vector2Int(4, 7);
+                if (backRank[x] == PieceType.King)
+                {
+                    s.whiteKingSquare = new Vector2Int(x, 0);
+                    s.blackKingSquare = new Vector2Int(x, height - 1);
+                }
+            }
 
             s.currentPlayer = PieceColor.White;
             s.phaseOne = true;
 
-            // The live game's opening black-stone rule is not modelled by SimRules
-            // (ApplyFullTurn early-returns on isInitialBlackStoneTurn and the generator
-            // never emits one), so the harness starts past it to match what the search
-            // actually reasons about.
+            // The live game's opening black-stone rule is not modelled by SimRules, so the
+            // harness starts past it to match what the search actually reasons about.
             s.blackInitialStonePending = false;
 
-            // Superko needs somewhere to record positions. Seed it with the opening position so
-            // a cycle back to the start is caught too.
             s.positionHistory = new SimPositionHistory();
             s.positionHistory.Push(SimZobrist.ComputeBoardHash(s));
 
@@ -88,31 +132,28 @@ namespace ChoSim
         }
 
         /// <summary>
-        /// Renders chess squares and Go intersections together.
-        /// Intersections ('+' empty, 'O' white stone, '@' black stone) sit on square corners;
-        /// pieces (uppercase = White) sit between them.
+        /// Renders squares and intersections together. Intersections ('+' empty, 'O' white,
+        /// '@' black) sit on square corners; pieces (uppercase = White) sit between them.
         /// </summary>
         public static string Render(SimState s)
         {
             var sb = new StringBuilder();
 
-            for (int iy = s.intersectionSize - 1; iy >= 0; iy--)
+            for (int iy = s.intersectionHeight - 1; iy >= 0; iy--)
             {
-                // Intersection row iy
                 sb.Append(iy.ToString().PadLeft(2)).Append(' ');
-                for (int ix = 0; ix < s.intersectionSize; ix++)
+                for (int ix = 0; ix < s.intersectionWidth; ix++)
                 {
                     sb.Append(StoneGlyph(s.stones[ix, iy]));
-                    if (ix < s.intersectionSize - 1) sb.Append("---");
+                    if (ix < s.intersectionWidth - 1) sb.Append("---");
                 }
                 sb.AppendLine();
 
-                // Piece row for square rank (iy-1), drawn between intersection rows
                 int rank = iy - 1;
                 if (rank >= 0)
                 {
                     sb.Append("   ");
-                    for (int x = 0; x < s.boardSize; x++)
+                    for (int x = 0; x < s.boardWidth; x++)
                     {
                         var sp = s.squares[x, rank];
                         sb.Append('|').Append(' ')
@@ -125,18 +166,24 @@ namespace ChoSim
             }
 
             sb.Append("   ");
-            for (int ix = 0; ix < s.intersectionSize; ix++)
+            for (int ix = 0; ix < s.intersectionWidth; ix++)
             {
                 sb.Append(ix);
-                if (ix < s.intersectionSize - 1) sb.Append("   ");
+                if (ix < s.intersectionWidth - 1) sb.Append("   ");
             }
             sb.AppendLine("   (intersection x)");
+
+            sb.Append("  ").Append(s.boardWidth).Append('x').Append(s.boardHeight)
+              .Append(" squares, ").Append(s.intersectionWidth).Append('x').Append(s.intersectionHeight)
+              .Append(" intersections");
+            sb.AppendLine();
 
             sb.Append("  turn=").Append(s.currentPlayer)
               .Append(" phase=").Append(s.phaseOne ? "1-chess" : "2-go");
             if (s.waitingForTerritoryClick) sb.Append(" [territory-removal]");
             if (s.waitingForPawnStoneChoice) sb.Append(" [pawn-bonus-stone]");
             if (s.goKoPoint.HasValue) sb.Append(" ko=").Append(s.goKoPoint.Value);
+            if (s.noProgressTurns > 0) sb.Append(" noProgress=").Append(s.noProgressTurns);
             if (s.gameOver) sb.Append(" GAME OVER winner=").Append(s.winner.HasValue ? s.winner.Value.ToString() : "draw");
             sb.AppendLine();
 

@@ -91,9 +91,9 @@ public static class SimZobrist
         ulong h = 0;
 
         // Pieces
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -111,8 +111,8 @@ public static class SimZobrist
         }
 
         // Stones (assumes intersectionSize is 9; if not, still hashes a prefix deterministically)
-        int maxIx = Math.Min(state.intersectionSize, 9);
-        int maxIy = Math.Min(state.intersectionSize, 9);
+        int maxIx = Math.Min(state.intersectionWidth, 9);
+        int maxIy = Math.Min(state.intersectionHeight, 9);
         for (int ix = 0; ix < maxIx; ix++)
         {
             for (int iy = 0; iy < maxIy; iy++)
@@ -237,9 +237,9 @@ public static class SimZobrist
 
         ulong h = 0UL;
 
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -256,8 +256,8 @@ public static class SimZobrist
             }
         }
 
-        int maxIx = Math.Min(state.intersectionSize, 9);
-        int maxIy = Math.Min(state.intersectionSize, 9);
+        int maxIx = Math.Min(state.intersectionWidth, 9);
+        int maxIy = Math.Min(state.intersectionHeight, 9);
         for (int ix = 0; ix < maxIx; ix++)
         {
             for (int iy = 0; iy < maxIy; iy++)

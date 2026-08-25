@@ -29,6 +29,9 @@ namespace ChoSim
         {
             Console.WriteLine(@"ChoSim - headless harness for the Cho (chess+go) engine.
 
+  All commands accept --variant standard|small  (small = 5x6 squares, one of each
+  non-pawn piece, single-step pawns, no castling).
+
   show       [--plies N] [--seed S]
              Print a position (after N random decisions).
 
@@ -43,6 +46,7 @@ namespace ChoSim
              Time the hot functions in isolation, with allocation counts.
 
   match      [--a SPEC] [--b SPEC] [--games G] [--turns T] [--seed S] [--openings N]
+             [--superko true|false] [--noprogress N]   (N=0 disables the draw rule)
              Self-play A/B. SPEC is kind:depth, kind in {search, legacy, random}.
              Colors are swapped every game. Example: --a legacy:4 --b search:4");
         }
@@ -54,7 +58,7 @@ namespace ChoSim
             int plies = a.Int("plies", 0);
             int seed = a.Int("seed", 1);
 
-            var s = Positions.StartPosition();
+            var s = Positions.Create(VariantOf(a));
             var rng = new RandomAgent(seed);
             for (int i = 0; i < plies && !s.gameOver; i++) Driver.Step(s, rng, out _);
 
@@ -100,7 +104,7 @@ namespace ChoSim
 
             for (int g = 0; g < games; g++)
             {
-                var s = Positions.StartPosition();
+                var s = Positions.Create(VariantOf(a));
                 var rng = new RandomAgent(seed + g);
 
                 int turnsPlayed = 0;
@@ -184,7 +188,7 @@ namespace ChoSim
             int timeMs = a.Int("time", 1_000_000);
             int seed = a.Int("seed", 1);
 
-            var s = Positions.StartPosition();
+            var s = Positions.Create(VariantOf(a));
             var rng = new RandomAgent(seed);
             for (int i = 0; i < plies && !s.gameOver; i++) Driver.Step(s, rng, out _);
 
@@ -243,7 +247,15 @@ namespace ChoSim
             int turns = a.Int("turns", 120);
             int seed = a.Int("seed", 1);
             int openings = a.Int("openings", 6);
+            var variant = VariantOf(a);
+            Positions.ApplyVariantRules(variant);
 
+            // Termination rules can be switched off to isolate their effect.
+            SimRules.superkoEnabled = a.Bool("superko", true);
+            SimRules.noProgressTurnLimit = a.Int("noprogress", 50);
+            Console.WriteLine($"rules: superko={SimRules.superkoEnabled} noProgressLimit={SimRules.noProgressTurnLimit}");
+
+            Console.WriteLine($"variant: {variant}");
             Console.WriteLine($"match: A={specA}  B={specB}   {games} games, <={turns} turns, {openings} random opening decisions");
             Console.WriteLine();
 
@@ -260,7 +272,7 @@ namespace ChoSim
                 var black = aIsWhite ? agentB : agentA;
 
                 var sw = Stopwatch.StartNew();
-                var r = Driver.PlayGame(white, black, turns, openings, seed + g);
+                var r = Driver.PlayGame(white, black, turns, openings, seed + g, null, variant);
                 sw.Stop();
 
                 string winner;
@@ -290,7 +302,7 @@ namespace ChoSim
             int seed = a.Int("seed", 7);
             int iters = a.Int("iters", 20000);
 
-            var s = Positions.StartPosition();
+            var s = Positions.Create(VariantOf(a));
             var rng = new RandomAgent(seed);
             for (int i = 0; i < plies && !s.gameOver; i++) Driver.Step(s, rng, out _);
 
@@ -347,6 +359,13 @@ namespace ChoSim
         }
 
         // ----------------------------------------------------------------- args
+
+        static Variant VariantOf(Args a)
+        {
+            string v = a.Str("variant", "standard").ToLowerInvariant();
+            if (v == "small" || v == "5x6") return Variant.Small;
+            return Variant.Standard;
+        }
 
         sealed class Args
         {

@@ -18,6 +18,15 @@ public static class SimRules
     // 100 plies, so raise this to 100 if you want the closer analogue. Tune with the harness.
     public static int noProgressTurnLimit = 50;
 
+    // Variant switches. Defaults reproduce standard 8x8 play.
+    public static bool pawnsMayDoubleStep = true;
+
+    // File the king starts on, for the king-placement heuristic. -1 derives it as width/2,
+    // which is the e-file on a standard board. Set explicitly for variants whose back rank
+    // puts the king elsewhere.
+    public static int kingStartFile = -1;
+    public static bool castlingEnabled = true;
+
     public static bool superkoEnabled = true;
 
     // Whether the search also filters superko at interior nodes.
@@ -73,7 +82,7 @@ public static class SimRules
 
                 foreach (var c in corners)
                 {
-                    if (c.x < 0 || c.y < 0 || c.x >= state.intersectionSize || c.y >= state.intersectionSize) continue;
+                    if (c.x < 0 || c.y < 0 || c.x >= state.intersectionWidth || c.y >= state.intersectionHeight) continue;
                     if (state.stones[c.x, c.y] != enemy) continue;
 
                     turns.Add(new SimTurn
@@ -93,7 +102,7 @@ public static class SimRules
             {
                 if (!state.lastMovedSquare.HasValue) return turns;
                 var sq = state.lastMovedSquare.Value;
-                if (sq.x < 0 || sq.y < 0 || sq.x >= state.boardSize || sq.y >= state.boardSize) return turns;
+                if (sq.x < 0 || sq.y < 0 || sq.x >= state.boardWidth || sq.y >= state.boardHeight) return turns;
 
                 var sp = state.squares[sq.x, sq.y];
                 if (!sp.HasValue || sp.Value.type != PieceType.Pawn) return turns;
@@ -110,7 +119,7 @@ public static class SimRules
 
                 foreach (var c in corners)
                 {
-                    if (c.x < 0 || c.y < 0 || c.x >= state.intersectionSize || c.y >= state.intersectionSize) continue;
+                    if (c.x < 0 || c.y < 0 || c.x >= state.intersectionWidth || c.y >= state.intersectionHeight) continue;
                     if (state.stones[c.x, c.y] != SimStoneColor.None) continue;
 
                     turns.Add(new SimTurn
@@ -140,9 +149,9 @@ public static class SimRules
             return turns;
         }
 
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -184,7 +193,7 @@ public static class SimRules
                 foreach (var to in finalMoves)
                 {
                     bool isPawn = piece.type == PieceType.Pawn;
-                    int promoteRank = (piece.color == PieceColor.White) ? (state.boardSize - 1) : 0;
+                    int promoteRank = (piece.color == PieceColor.White) ? (state.boardHeight - 1) : 0;
                     bool isPromotion = isPawn && to.y == promoteRank;
 
                     if (isPromotion)
@@ -255,7 +264,7 @@ public static class SimRules
     {
         if (!superkoEnabled) return false;
         if (state?.positionHistory == null) return false;
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return false;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return false;
         if (state.stones[ix, iy] != SimStoneColor.None) return false;
 
         return state.positionHistory.Contains(BoardHashAfterMainStone(state, ix, iy, color));
@@ -263,9 +272,9 @@ public static class SimRules
 
     static void AddMainStoneTurns(SimState state, SimStoneColor color, List<SimTurn> turns, bool applySuperko)
     {
-        for (int ix = 0; ix < state.intersectionSize; ix++)
+        for (int ix = 0; ix < state.intersectionWidth; ix++)
         {
-            for (int iy = 0; iy < state.intersectionSize; iy++)
+            for (int iy = 0; iy < state.intersectionHeight; iy++)
             {
                 if (state.stones[ix, iy] != SimStoneColor.None) continue;
                 if (!IsLegalGoPlacement(state, ix, iy, color, applySuperko)) continue;
@@ -318,7 +327,7 @@ public static class SimRules
                 if (state.lastMovedSquare.HasValue)
                 {
                     var sq = state.lastMovedSquare.Value;
-                    if (sq.x >= 0 && sq.y >= 0 && sq.x < state.boardSize && sq.y < state.boardSize)
+                    if (sq.x >= 0 && sq.y >= 0 && sq.x < state.boardWidth && sq.y < state.boardHeight)
                     {
                         var sp = state.squares[sq.x, sq.y];
                         if (sp.HasValue && sp.Value.type == PieceType.Pawn)
@@ -365,9 +374,9 @@ public static class SimRules
 
             // Mirror live EndTurn behavior: clear justDoubleStepped on all pawns of the side
             // that is about to move now. This preserves a one-turn en passant window.
-            for (int x = 0; x < state.boardSize; x++)
+            for (int x = 0; x < state.boardWidth; x++)
             {
-                for (int y = 0; y < state.boardSize; y++)
+                for (int y = 0; y < state.boardHeight; y++)
                 {
                     var sp = state.squares[x, y];
                     if (!sp.HasValue) continue;
@@ -433,16 +442,16 @@ public static class SimRules
     {
         var c = new SimProgressCounts { valid = true };
 
-        for (int ix = 0; ix < state.intersectionSize; ix++)
-            for (int iy = 0; iy < state.intersectionSize; iy++)
+        for (int ix = 0; ix < state.intersectionWidth; ix++)
+            for (int iy = 0; iy < state.intersectionHeight; iy++)
             {
                 var st = state.stones[ix, iy];
                 if (st == SimStoneColor.White) c.whiteStones++;
                 else if (st == SimStoneColor.Black) c.blackStones++;
             }
 
-        for (int x = 0; x < state.boardSize; x++)
-            for (int y = 0; y < state.boardSize; y++)
+        for (int x = 0; x < state.boardWidth; x++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -485,8 +494,8 @@ public static class SimRules
         int sx = square.x;
         int sy = square.y;
         if (sx < 0 || sy < 0) return false;
-        if (sx + 1 >= state.intersectionSize) return false;
-        if (sy + 1 >= state.intersectionSize) return false;
+        if (sx + 1 >= state.intersectionWidth) return false;
+        if (sy + 1 >= state.intersectionHeight) return false;
 
         return state.stones[sx, sy] == color
             || state.stones[sx + 1, sy] == color
@@ -501,12 +510,12 @@ public static class SimRules
         int sx = pawnSquare.x;
         int sy = pawnSquare.y;
         if (sx < 0 || sy < 0) return;
-        if (sx + 1 >= state.intersectionSize) return;
-        if (sy + 1 >= state.intersectionSize) return;
+        if (sx + 1 >= state.intersectionWidth) return;
+        if (sy + 1 >= state.intersectionHeight) return;
 
         void AddIfEmpty(int ix, int iy)
         {
-            if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return;
+            if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return;
             if (state.stones[ix, iy] != SimStoneColor.None) return;
             state.pendingPawnCornerOptions.Add(new Vector2Int(ix, iy));
         }
@@ -521,7 +530,7 @@ public static class SimRules
     {
         int ix = placement.intersection.x;
         int iy = placement.intersection.y;
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return;
         if (state.stones[ix, iy] != SimStoneColor.None) return;
 
         // Place the stone
@@ -577,7 +586,7 @@ public static class SimRules
 
         int ix = placement.intersection.x;
         int iy = placement.intersection.y;
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return;
         if (state.stones[ix, iy] != SimStoneColor.None) return;
 
         state.stones[ix, iy] = placement.color;
@@ -607,7 +616,7 @@ public static class SimRules
         if (state == null) return;
         int ix = intersection.x;
         int iy = intersection.y;
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return;
         if (state.stones[ix, iy] != expectedEnemy) return;
 
         state.stones[ix, iy] = SimStoneColor.None;
@@ -626,7 +635,7 @@ public static class SimRules
 
         void TryCapture(int nx, int ny)
         {
-            if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return;
+            if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return;
             if (state.stones[nx, ny] != enemy) return;
             if (HasLiberties_Sim(state, nx, ny)) return;
 
@@ -655,7 +664,7 @@ public static class SimRules
         var c = state.stones[ix, iy];
         if (c == SimStoneColor.None) return 0;
 
-        bool[,] visited = new bool[state.intersectionSize, state.intersectionSize];
+        bool[,] visited = new bool[state.intersectionWidth, state.intersectionHeight];
         var stack = new Stack<Vector2Int>();
         var liberties = new HashSet<int>();
 
@@ -670,7 +679,7 @@ public static class SimRules
 
             void VisitNeighbor(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return;
 
                 var v = state.stones[nx, ny];
                 if (v == SimStoneColor.None)
@@ -699,7 +708,7 @@ public static class SimRules
         var c = state.stones[ix, iy];
         if (c == SimStoneColor.None) return false;
 
-        bool[,] visited = new bool[state.intersectionSize, state.intersectionSize];
+        bool[,] visited = new bool[state.intersectionWidth, state.intersectionHeight];
         var stack = new Stack<Vector2Int>();
         stack.Push(new Vector2Int(ix, iy));
         visited[ix, iy] = true;
@@ -710,7 +719,7 @@ public static class SimRules
 
             void CheckNeighbor(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return;
                 if (state.stones[nx, ny] == SimStoneColor.None)
                 {
                     // Found a liberty.
@@ -746,7 +755,7 @@ public static class SimRules
         var c = state.stones[ix, iy];
         if (c == SimStoneColor.None) return result;
 
-        bool[,] visited = new bool[state.intersectionSize, state.intersectionSize];
+        bool[,] visited = new bool[state.intersectionWidth, state.intersectionHeight];
         var stack = new Stack<Vector2Int>();
         stack.Push(new Vector2Int(ix, iy));
         visited[ix, iy] = true;
@@ -758,7 +767,7 @@ public static class SimRules
 
             void TryAdd(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return;
                 if (visited[nx, ny]) return;
                 if (state.stones[nx, ny] != c) return;
                 visited[nx, ny] = true;
@@ -776,9 +785,9 @@ public static class SimRules
 
     static void CheckAllPiecesForSurroundCapture_Sim(SimState state)
     {
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -810,8 +819,8 @@ public static class SimRules
         // Corners of square (sx,sy) are intersections:
         // (sx,sy), (sx+1,sy), (sx,sy+1), (sx+1,sy+1)
         if (sx < 0 || sy < 0) return false;
-        if (sx + 1 >= state.intersectionSize) return false;
-        if (sy + 1 >= state.intersectionSize) return false;
+        if (sx + 1 >= state.intersectionWidth) return false;
+        if (sy + 1 >= state.intersectionHeight) return false;
 
         return state.stones[sx, sy] == enemy &&
                state.stones[sx + 1, sy] == enemy &&
@@ -821,7 +830,7 @@ public static class SimRules
 
     static bool IsLegalGoPlacement(SimState state, int ix, int iy, SimStoneColor color, bool applySuperko = true)
     {
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return false;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return false;
         if (state.stones[ix, iy] != SimStoneColor.None) return false;
 
         // Simple-ko: forbid playing on the ko point for normal main-stone placements.
@@ -869,7 +878,7 @@ public static class SimRules
 
     static bool IsEmptyIntersection(SimState state, int ix, int iy)
     {
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return false;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return false;
         return state.stones[ix, iy] == SimStoneColor.None;
     }
 
@@ -879,7 +888,7 @@ public static class SimRules
 
         bool TryGroup(int nx, int ny)
         {
-            if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return false;
+            if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return false;
             if (state.stones[nx, ny] != enemy) return false;
 
             // If the group has ANY liberty other than the placement point (ix,iy), it survives.
@@ -898,7 +907,7 @@ public static class SimRules
         var c = state.stones[startX, startY];
         if (c == SimStoneColor.None) return false;
 
-        bool[,] visited = new bool[state.intersectionSize, state.intersectionSize];
+        bool[,] visited = new bool[state.intersectionWidth, state.intersectionHeight];
         var stack = new Stack<Vector2Int>();
         stack.Push(new Vector2Int(startX, startY));
         visited[startX, startY] = true;
@@ -909,7 +918,7 @@ public static class SimRules
 
             void VisitNeighbor(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return;
 
                 if (state.stones[nx, ny] == SimStoneColor.None)
                 {
@@ -1028,9 +1037,9 @@ public static class SimRules
 
         int score = 0; // White-point-of-view
 
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -1084,9 +1093,9 @@ public static class SimRules
         // Capturing stones becomes intrinsically valuable, which improves defense/offense.
         int white = 0;
         int black = 0;
-        for (int ix = 0; ix < state.intersectionSize; ix++)
+        for (int ix = 0; ix < state.intersectionWidth; ix++)
         {
-            for (int iy = 0; iy < state.intersectionSize; iy++)
+            for (int iy = 0; iy < state.intersectionHeight; iy++)
             {
                 var c = state.stones[ix, iy];
                 if (c == SimStoneColor.White) white++;
@@ -1104,14 +1113,14 @@ public static class SimRules
 
     static int EvaluateGoAtariPressure(SimState state)
     {
-        int size = state.intersectionSize;
-        bool[,] visited = new bool[size, size];
+        int sw = state.intersectionWidth, sh = state.intersectionHeight;
+        bool[,] visited = new bool[sw, sh];
 
         int s = 0; // White POV
 
-        for (int ix = 0; ix < size; ix++)
+        for (int ix = 0; ix < sw; ix++)
         {
-            for (int iy = 0; iy < size; iy++)
+            for (int iy = 0; iy < sh; iy++)
             {
                 if (visited[ix, iy]) continue;
                 var c = state.stones[ix, iy];
@@ -1133,7 +1142,7 @@ public static class SimRules
 
                     void Visit(int nx, int ny)
                     {
-                        if (nx < 0 || ny < 0 || nx >= size || ny >= size) return;
+                        if (nx < 0 || ny < 0 || nx >= sw || ny >= sh) return;
                         var v = state.stones[nx, ny];
                         if (v == SimStoneColor.None)
                         {
@@ -1207,9 +1216,9 @@ public static class SimRules
         int blackBishops = 0;
 
         // Basic piece activity / centralization + king placement (no check rules, so keep mild)
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -1221,7 +1230,7 @@ public static class SimRules
                     else blackBishops++;
                 }
 
-                int activity = PieceActivityBonus(p.type, x, y, p.color);
+                int activity = PieceActivityBonus(p.type, x, y, p.color, state.boardWidth, state.boardHeight);
                 s += (p.color == PieceColor.White) ? activity : -activity;
             }
         }
@@ -1236,10 +1245,14 @@ public static class SimRules
     {
         int s = 0; // White POV
 
+        if (!castlingEnabled) return 0;
+
+        int kingSideX = state.boardWidth - 2;
+        int queenSideX = 2;
         bool whiteCastledLike = state.whiteKingSquare.HasValue && state.whiteKingSquare.Value.y == 0 &&
-                                (state.whiteKingSquare.Value.x == 2 || state.whiteKingSquare.Value.x == 6);
-        bool blackCastledLike = state.blackKingSquare.HasValue && state.blackKingSquare.Value.y == 7 &&
-                                (state.blackKingSquare.Value.x == 2 || state.blackKingSquare.Value.x == 6);
+                                (state.whiteKingSquare.Value.x == queenSideX || state.whiteKingSquare.Value.x == kingSideX);
+        bool blackCastledLike = state.blackKingSquare.HasValue && state.blackKingSquare.Value.y == state.boardHeight - 1 &&
+                                (state.blackKingSquare.Value.x == queenSideX || state.blackKingSquare.Value.x == kingSideX);
 
         if (!whiteCastledLike)
         {
@@ -1260,9 +1273,9 @@ public static class SimRules
         // Build simple attack/defense maps for both sides.
         // This is a general-purpose chess term that encourages both defense (avoid hanging pieces)
         // and offense (create threats on valuable pieces).
-        int n = state.boardSize;
-        int[,] whiteAttacks = new int[n, n];
-        int[,] blackAttacks = new int[n, n];
+        int bw = state.boardWidth, bh = state.boardHeight;
+        int[,] whiteAttacks = new int[bw, bh];
+        int[,] blackAttacks = new int[bw, bh];
 
         FillAttackCounts(state, PieceColor.White, whiteAttacks);
         FillAttackCounts(state, PieceColor.Black, blackAttacks);
@@ -1277,9 +1290,9 @@ public static class SimRules
             return v;
         }
 
-        for (int x = 0; x < n; x++)
+        for (int x = 0; x < bw; x++)
         {
-            for (int y = 0; y < n; y++)
+            for (int y = 0; y < bh; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -1334,26 +1347,26 @@ public static class SimRules
 
     static void FillAttackCounts(SimState state, PieceColor attacker, int[,] attacks)
     {
-        int n = state.boardSize;
-        for (int i = 0; i < n; i++)
-            for (int j = 0; j < n; j++)
+        int bw = state.boardWidth, bh = state.boardHeight;
+        for (int i = 0; i < bw; i++)
+            for (int j = 0; j < bh; j++)
                 attacks[i, j] = 0;
 
         void Add(int x, int y)
         {
-            if (x < 0 || y < 0 || x >= n || y >= n) return;
+            if (x < 0 || y < 0 || x >= bw || y >= bh) return;
             attacks[x, y]++;
         }
 
         bool HasPiece(int x, int y)
         {
-            if (x < 0 || y < 0 || x >= n || y >= n) return false;
+            if (x < 0 || y < 0 || x >= bw || y >= bh) return false;
             return state.squares[x, y].HasValue;
         }
 
-        for (int x = 0; x < n; x++)
+        for (int x = 0; x < bw; x++)
         {
-            for (int y = 0; y < n; y++)
+            for (int y = 0; y < bh; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -1434,10 +1447,10 @@ public static class SimRules
         System.Action<int, int> add,
         System.Func<int, int, bool> hasPiece)
     {
-        int n = state.boardSize;
+        int bw = state.boardWidth, bh = state.boardHeight;
         int x = fromX + dx;
         int y = fromY + dy;
-        while (x >= 0 && y >= 0 && x < n && y < n)
+        while (x >= 0 && y >= 0 && x < bw && y < bh)
         {
             add(x, y);
             if (hasPiece(x, y)) break;
@@ -1446,18 +1459,22 @@ public static class SimRules
         }
     }
 
-    static int PieceActivityBonus(PieceType type, int x, int y, PieceColor color)
+    static int PieceActivityBonus(PieceType type, int x, int y, PieceColor color, int bw, int bh)
     {
         // Encourage development/centralization in a generic way.
         // We avoid move-generation-heavy terms here so evaluation stays fast.
 
-        // Distance to the nearest center square among {d4,e4,d5,e5} in 0..7 coords.
+        // The centre is derived from the board, so it lands on {d4,e4,d5,e5} for 8x8 and on
+        // the middle square(s) of any other size. Odd dimensions collapse to a single centre.
+        int cxLo = (bw - 1) / 2, cxHi = bw / 2;
+        int cyLo = (bh - 1) / 2, cyHi = bh / 2;
+
         int CenterDist(int px, int py)
         {
-            int d1 = Mathf.Abs(px - 3) + Mathf.Abs(py - 3);
-            int d2 = Mathf.Abs(px - 4) + Mathf.Abs(py - 3);
-            int d3 = Mathf.Abs(px - 3) + Mathf.Abs(py - 4);
-            int d4 = Mathf.Abs(px - 4) + Mathf.Abs(py - 4);
+            int d1 = Mathf.Abs(px - cxLo) + Mathf.Abs(py - cyLo);
+            int d2 = Mathf.Abs(px - cxHi) + Mathf.Abs(py - cyLo);
+            int d3 = Mathf.Abs(px - cxLo) + Mathf.Abs(py - cyHi);
+            int d4 = Mathf.Abs(px - cxHi) + Mathf.Abs(py - cyHi);
             return Mathf.Min(Mathf.Min(d1, d2), Mathf.Min(d3, d4));
         }
 
@@ -1477,19 +1494,19 @@ public static class SimRules
                 return centerBonus * 1;
             case PieceType.Pawn:
                 // Reward advancing pawns and occupying central files.
-                int advance = (color == PieceColor.White) ? y : (7 - y);
-                int fileBonus = (x == 3 || x == 4) ? 2 : 0;
+                int advance = (color == PieceColor.White) ? y : (bh - 1 - y);
+                int fileBonus = (x == cxLo || x == cxHi) ? 2 : 0;
                 return advance * 2 + fileBonus;
             case PieceType.King:
                 // No check/checkmate rules, so keep this gentle.
                 // Slightly prefer kings not wandering early and slightly reward castled-ish squares.
-                int startX = 4;
-                int startY = (color == PieceColor.White) ? 0 : 7;
+                int startX = kingStartFile >= 0 ? kingStartFile : (bw / 2);
+                int startY = (color == PieceColor.White) ? 0 : (bh - 1);
                 int manhattanFromStart = Mathf.Abs(x - startX) + Mathf.Abs(y - startY);
                 int wanderPenalty = manhattanFromStart * 10;
 
                 // Small bonus if king is on c/g files on the back rank (castled proxy).
-                bool castledLike = (y == startY) && (x == 2 || x == 6);
+                bool castledLike = castlingEnabled && (y == startY) && (x == 2 || x == bw - 2);
                 int castleBonus = castledLike ? 30 : 0;
                 return castleBonus - wanderPenalty;
             default:
@@ -1513,9 +1530,9 @@ public static class SimRules
             return PieceValue(p.type) * 3;
         }
 
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -1527,8 +1544,8 @@ public static class SimRules
                 int sx = x;
                 int sy = y;
                 if (sx < 0 || sy < 0) continue;
-                if (sx + 1 >= state.intersectionSize) continue;
-                if (sy + 1 >= state.intersectionSize) continue;
+                if (sx + 1 >= state.intersectionWidth) continue;
+                if (sy + 1 >= state.intersectionHeight) continue;
 
                 int ax = 0;
                 int emptyCount = 0;
@@ -1602,7 +1619,7 @@ public static class SimRules
     // Avoids DeepCopy allocations while still being correct for suicide and simple-ko.
     static bool IsLegalGoPlacement_ForThreat(SimState state, int ix, int iy, SimStoneColor color)
     {
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return false;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return false;
         if (state.stones[ix, iy] != SimStoneColor.None) return false;
 
         // Simple ko
@@ -1618,14 +1635,14 @@ public static class SimRules
         }
 
         SimStoneColor enemy = (color == SimStoneColor.White) ? SimStoneColor.Black : SimStoneColor.White;
-        int placeIdx = ix + state.intersectionSize * iy;
+        int placeIdx = ix + state.intersectionWidth * iy;
 
         // If we capture an adjacent enemy group by filling its last liberty, placement is legal.
         bool CapturesAdjacentEnemy()
         {
             bool Check(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return false;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return false;
                 if (state.stones[nx, ny] != enemy) return false;
                 AnalyzeGroupLiberties(state, nx, ny, out int libs, out bool hasOtherLib, placeIdx);
                 return libs == 1 && !hasOtherLib; // only liberty is the placement point
@@ -1641,7 +1658,7 @@ public static class SimRules
         {
             bool Check(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return false;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return false;
                 if (state.stones[nx, ny] != color) return false;
                 AnalyzeGroupLiberties(state, nx, ny, out int libs, out bool hasOtherLib, placeIdx);
                 return libs > 1 || hasOtherLib;
@@ -1658,7 +1675,7 @@ public static class SimRules
 
     static bool IsDefenderBlockerCapturableInOne(SimState state, int blockerX, int blockerY, SimStoneColor attacker)
     {
-        if (blockerX < 0 || blockerY < 0 || blockerX >= state.intersectionSize || blockerY >= state.intersectionSize) return false;
+        if (blockerX < 0 || blockerY < 0 || blockerX >= state.intersectionWidth || blockerY >= state.intersectionHeight) return false;
         var defender = state.stones[blockerX, blockerY];
         if (defender == SimStoneColor.None || defender == attacker) return false;
 
@@ -1671,8 +1688,8 @@ public static class SimRules
     static bool TryGetSingleLiberty(SimState state, int startX, int startY, out Vector2Int liberty)
     {
         liberty = default;
-        int size = state.intersectionSize;
-        EnsureGoBuffers(size);
+        int sw = state.intersectionWidth, sh = state.intersectionHeight;
+        EnsureGoBuffers(sw, sh);
 
         _goStamp++;
         if (_goStamp == int.MaxValue)
@@ -1691,7 +1708,7 @@ public static class SimRules
         SimStoneColor c = state.stones[startX, startY];
         if (c == SimStoneColor.None) return false;
 
-        int Enc(int x, int y) => x + size * y;
+        int Enc(int x, int y) => x + sw * y;
 
         int firstLibIdx = -1;
         int libCount = 0;
@@ -1704,12 +1721,12 @@ public static class SimRules
         while (top > 0)
         {
             int idx = _goStack[--top];
-            int x = idx % size;
-            int y = idx / size;
+            int x = idx % sw;
+            int y = idx / sw;
 
             void Visit(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= size || ny >= size) return;
+                if (nx < 0 || ny < 0 || nx >= sw || ny >= sh) return;
                 int nidx = Enc(nx, ny);
                 var v = state.stones[nx, ny];
                 if (v == SimStoneColor.None)
@@ -1741,7 +1758,7 @@ public static class SimRules
         }
 
         if (libCount != 1 || firstLibIdx < 0) return false;
-        liberty = new Vector2Int(firstLibIdx % size, firstLibIdx / size);
+        liberty = new Vector2Int(firstLibIdx % sw, firstLibIdx / sw);
         return true;
     }
 
@@ -1759,7 +1776,7 @@ public static class SimRules
         var p = placement.Value;
         int ix = p.intersection.x;
         int iy = p.intersection.y;
-        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return 0;
+        if (ix < 0 || iy < 0 || ix >= state.intersectionWidth || iy >= state.intersectionHeight) return 0;
 
         int key = 0;
 
@@ -1770,7 +1787,7 @@ public static class SimRules
         // A placement at (ix,iy) is a corner for up to 4 chess squares.
         void ConsiderSquare(int sx, int sy)
         {
-            if (sx < 0 || sy < 0 || sx >= state.boardSize || sy >= state.boardSize) return;
+            if (sx < 0 || sy < 0 || sx >= state.boardWidth || sy >= state.boardHeight) return;
             var sp = state.squares[sx, sy];
             if (!sp.HasValue) return;
             var piece = sp.Value;
@@ -1811,7 +1828,7 @@ public static class SimRules
                     }
                 }
 
-                if (sx + 1 >= state.intersectionSize || sy + 1 >= state.intersectionSize) return;
+                if (sx + 1 >= state.intersectionWidth || sy + 1 >= state.intersectionHeight) return;
                 Check(sx, sy);
                 Check(sx + 1, sy);
                 Check(sx, sy + 1);
@@ -1838,7 +1855,7 @@ public static class SimRules
         {
             bool Check(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= state.intersectionSize || ny >= state.intersectionSize) return false;
+                if (nx < 0 || ny < 0 || nx >= state.intersectionWidth || ny >= state.intersectionHeight) return false;
                 if (state.stones[nx, ny] != them) return false;
                 if (!TryGetSingleLiberty(state, nx, ny, out var lib)) return false;
                 return lib.x == ix && lib.y == iy;
@@ -1865,9 +1882,9 @@ public static class SimRules
     static int _goStamp;
     static int _goLibToken;
 
-    static void EnsureGoBuffers(int size)
+    static void EnsureGoBuffers(int w, int h)
     {
-        int cap = size * size;
+        int cap = w * h;
         if (_goVisitStamp == null || _goVisitStamp.Length < cap) _goVisitStamp = new int[cap];
         if (_goLibStamp == null || _goLibStamp.Length < cap) _goLibStamp = new int[cap];
         if (_goStack == null || _goStack.Length < cap) _goStack = new int[cap];
@@ -1875,8 +1892,8 @@ public static class SimRules
 
     static void AnalyzeGroupLiberties(SimState state, int startX, int startY, out int libs, out bool hasLibertyOtherThanTarget, int targetLibIdx)
     {
-        int size = state.intersectionSize;
-        EnsureGoBuffers(size);
+        int sw = state.intersectionWidth, sh = state.intersectionHeight;
+        EnsureGoBuffers(sw, sh);
 
         _goStamp++;
         if (_goStamp == int.MaxValue)
@@ -1897,7 +1914,7 @@ public static class SimRules
         int localLibs = 0;
         bool localHasOther = false;
 
-        int Enc(int x, int y) => x + size * y;
+        int Enc(int x, int y) => x + sw * y;
 
         int sp = Enc(startX, startY);
         int top = 0;
@@ -1907,12 +1924,12 @@ public static class SimRules
         while (top > 0)
         {
             int idx = _goStack[--top];
-            int x = idx % size;
-            int y = idx / size;
+            int x = idx % sw;
+            int y = idx / sw;
 
             void Visit(int nx, int ny)
             {
-                if (nx < 0 || ny < 0 || nx >= size || ny >= size) return;
+                if (nx < 0 || ny < 0 || nx >= sw || ny >= sh) return;
                 int nidx = Enc(nx, ny);
                 var v = state.stones[nx, ny];
                 if (v == SimStoneColor.None)
@@ -1950,15 +1967,16 @@ public static class SimRules
 
         int s = 0; // White POV
 
-        int[] whiteFileCount = new int[8];
-        int[] blackFileCount = new int[8];
+        int bw = state.boardWidth, bh = state.boardHeight;
+        int[] whiteFileCount = new int[bw];
+        int[] blackFileCount = new int[bw];
 
-        bool[,] whitePawn = new bool[8, 8];
-        bool[,] blackPawn = new bool[8, 8];
+        bool[,] whitePawn = new bool[bw, bh];
+        bool[,] blackPawn = new bool[bw, bh];
 
-        for (int x = 0; x < 8; x++)
+        for (int x = 0; x < bw; x++)
         {
-            for (int y = 0; y < 8; y++)
+            for (int y = 0; y < bh; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -1979,7 +1997,7 @@ public static class SimRules
         }
 
         // Doubled pawn penalties
-        for (int f = 0; f < 8; f++)
+        for (int f = 0; f < bw; f++)
         {
             if (whiteFileCount[f] > 1) s -= 12 * (whiteFileCount[f] - 1);
             if (blackFileCount[f] > 1) s += 12 * (blackFileCount[f] - 1);
@@ -1987,8 +2005,8 @@ public static class SimRules
 
         bool HasNeighborPawn(bool[,] pawns, int file)
         {
-            if (file < 0 || file >= 8) return false;
-            for (int y = 0; y < 8; y++)
+            if (file < 0 || file >= bw) return false;
+            for (int y = 0; y < bh; y++)
             {
                 if (pawns[file, y]) return true;
             }
@@ -1996,9 +2014,9 @@ public static class SimRules
         }
 
         // Isolated + passed pawns (iterate actual pawn squares)
-        for (int x = 0; x < 8; x++)
+        for (int x = 0; x < bw; x++)
         {
-            for (int y = 0; y < 8; y++)
+            for (int y = 0; y < bh; y++)
             {
                 if (whitePawn[x, y])
                 {
@@ -2006,9 +2024,9 @@ public static class SimRules
                     if (isolated) s -= 10;
 
                     bool passed = true;
-                    for (int fx = Mathf.Max(0, x - 1); fx <= Mathf.Min(7, x + 1); fx++)
+                    for (int fx = Mathf.Max(0, x - 1); fx <= Mathf.Min(bw - 1, x + 1); fx++)
                     {
-                        for (int by = y + 1; by < 8; by++)
+                        for (int by = y + 1; by < bh; by++)
                         {
                             if (blackPawn[fx, by]) { passed = false; goto DoneWhite; }
                         }
@@ -2027,7 +2045,7 @@ public static class SimRules
                     if (isolated) s += 10;
 
                     bool passed = true;
-                    for (int fx = Mathf.Max(0, x - 1); fx <= Mathf.Min(7, x + 1); fx++)
+                    for (int fx = Mathf.Max(0, x - 1); fx <= Mathf.Min(bw - 1, x + 1); fx++)
                     {
                         for (int wy = y - 1; wy >= 0; wy--)
                         {
@@ -2037,7 +2055,7 @@ public static class SimRules
                 DoneBlack:
                     if (passed)
                     {
-                        int advance = 7 - y;
+                        int advance = bh - 1 - y;
                         s -= 8 + advance * 3;
                     }
                 }
@@ -2087,9 +2105,9 @@ public static class SimRules
         // For each piece, count attacker stones on its 4 corners.
         // If a piece is Black, White stones are the attackers (positive).
         // If a piece is White, Black stones are the attackers (negative).
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -2122,8 +2140,8 @@ public static class SimRules
         // Corners of square (sx,sy) are intersections:
         // (sx,sy), (sx+1,sy), (sx,sy+1), (sx+1,sy+1)
         if (sx < 0 || sy < 0) return 0;
-        if (sx + 1 >= state.intersectionSize) return 0;
-        if (sy + 1 >= state.intersectionSize) return 0;
+        if (sx + 1 >= state.intersectionWidth) return 0;
+        if (sy + 1 >= state.intersectionHeight) return 0;
 
         int n = 0;
         if (state.stones[sx, sy] == attacker) n++;
@@ -2187,7 +2205,7 @@ public static class SimRules
             {
                 int dir = piece.color == PieceColor.White ? 1 : -1;
                 var enemySq = new Vector2Int(to.x, to.y - dir);
-                if (enemySq.x >= 0 && enemySq.y >= 0 && enemySq.x < state.boardSize && enemySq.y < state.boardSize)
+                if (enemySq.x >= 0 && enemySq.y >= 0 && enemySq.x < state.boardWidth && enemySq.y < state.boardHeight)
                 {
                     var epPawn = state.squares[enemySq.x, enemySq.y];
                     if (epPawn.HasValue && epPawn.Value.type == PieceType.Pawn && epPawn.Value.color != piece.color && epPawn.Value.justDoubleStepped)
@@ -2214,11 +2232,11 @@ public static class SimRules
         if (piece.type == PieceType.King && Mathf.Abs(to.x - from.x) == 2 && to.y == from.y)
         {
             int dir = to.x > from.x ? 1 : -1;
-            int rookFromX = dir == 1 ? 7 : 0;
+            int rookFromX = dir == 1 ? (state.boardWidth - 1) : 0;
             int rookToX = from.x + dir;
 
             int y = from.y;
-            if (rookFromX >= 0 && rookFromX < state.boardSize)
+            if (rookFromX >= 0 && rookFromX < state.boardWidth)
             {
                 var rookSq = state.squares[rookFromX, y];
                 if (rookSq.HasValue)
@@ -2271,12 +2289,12 @@ public static class SimRules
             if (piece.color == PieceColor.White)
             {
                 if (from.x == 0 && from.y == 0) state.whiteCanCastleQueenSide = false;
-                if (from.x == 7 && from.y == 0) state.whiteCanCastleKingSide = false;
+                if (from.x == state.boardWidth - 1 && from.y == 0) state.whiteCanCastleKingSide = false;
             }
             else
             {
-                if (from.x == 0 && from.y == 7) state.blackCanCastleQueenSide = false;
-                if (from.x == 7 && from.y == 7) state.blackCanCastleKingSide = false;
+                if (from.x == 0 && from.y == state.boardHeight - 1) state.blackCanCastleQueenSide = false;
+                if (from.x == state.boardWidth - 1 && from.y == state.boardHeight - 1) state.blackCanCastleKingSide = false;
             }
         }
 
@@ -2302,7 +2320,7 @@ public static class SimRules
         // If promotion is missing (shouldn't happen for generated moves), default to Queen.
         if (piece.type == PieceType.Pawn)
         {
-            int promoteRank = (piece.color == PieceColor.White) ? (state.boardSize - 1) : 0;
+            int promoteRank = (piece.color == PieceColor.White) ? (state.boardHeight - 1) : 0;
             if (to.y == promoteRank)
             {
                 piece.type = move.promotion ?? PieceType.Queen;
@@ -2321,7 +2339,7 @@ public static class SimRules
         if (color == PieceColor.White && state.whiteKingSquare.HasValue)
         {
             var sq = state.whiteKingSquare.Value;
-            if (sq.x >= 0 && sq.y >= 0 && sq.x < state.boardSize && sq.y < state.boardSize)
+            if (sq.x >= 0 && sq.y >= 0 && sq.x < state.boardWidth && sq.y < state.boardHeight)
             {
                 var sp = state.squares[sq.x, sq.y];
                 if (sp.HasValue && sp.Value.type == PieceType.King && sp.Value.color == PieceColor.White)
@@ -2332,7 +2350,7 @@ public static class SimRules
         if (color == PieceColor.Black && state.blackKingSquare.HasValue)
         {
             var sq = state.blackKingSquare.Value;
-            if (sq.x >= 0 && sq.y >= 0 && sq.x < state.boardSize && sq.y < state.boardSize)
+            if (sq.x >= 0 && sq.y >= 0 && sq.x < state.boardWidth && sq.y < state.boardHeight)
             {
                 var sp = state.squares[sq.x, sq.y];
                 if (sp.HasValue && sp.Value.type == PieceType.King && sp.Value.color == PieceColor.Black)
@@ -2342,9 +2360,9 @@ public static class SimRules
         }
 
         // Fallback: scan board (small, safe, robust).
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -2363,9 +2381,9 @@ public static class SimRules
         state.currentPlayer = color;
 
         int count = 0;
-        for (int x = 0; x < state.boardSize; x++)
+        for (int x = 0; x < state.boardWidth; x++)
         {
-            for (int y = 0; y < state.boardSize; y++)
+            for (int y = 0; y < state.boardHeight; y++)
             {
                 var sp = state.squares[x, y];
                 if (!sp.HasValue) continue;
@@ -2449,9 +2467,9 @@ public static class SimRules
     {
         var steps = new List<Vector2Int>();
         int x = from.x, y = from.y;
-        int bs = state.boardSize;
+        int bw = state.boardWidth, bh = state.boardHeight;
 
-        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bs && b < bs;
+        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bw && b < bh;
         bool IsEmpty(int a, int b) => !state.squares[a, b].HasValue;
 
         void TryAddRay(int dx, int dy)
@@ -2510,9 +2528,9 @@ public static class SimRules
     {
         var steps = new List<Vector2Int>();
         int x = from.x, y = from.y;
-        int bs = state.boardSize;
+        int bw = state.boardWidth, bh = state.boardHeight;
 
-        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bs && b < bs;
+        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bw && b < bh;
         bool IsEmpty(int a, int b) => !state.squares[a, b].HasValue;
 
         bool IsOwnTerritory(int a, int b)
@@ -2609,8 +2627,8 @@ public static class SimRules
 
         // Check bounds for intersections around this square
         if (x < 0 || y < 0) return false;
-        if (x + 1 >= state.intersectionSize) return false;
-        if (y + 1 >= state.intersectionSize) return false;
+        if (x + 1 >= state.intersectionWidth) return false;
+        if (y + 1 >= state.intersectionHeight) return false;
 
         int count = 0;
 
@@ -2631,10 +2649,10 @@ public static class SimRules
         var moves = new List<Vector2Int>();
         int x = from.x;
         int y = from.y;
-        int bs = state.boardSize;
+        int bw = state.boardWidth, bh = state.boardHeight;
         var color = piece.color;
 
-        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bs && b < bs;
+        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bw && b < bh;
         bool IsEmpty(int a, int b) => !state.squares[a, b].HasValue;
         bool IsEnemy(int a, int b)
         {
@@ -2652,9 +2670,9 @@ public static class SimRules
                         moves.Add(new Vector2Int(x, ny1));
 
                     // Initial double-step (match live chess rules).
-                    int startRow = (color == PieceColor.White) ? 1 : 6;
+                    int startRow = (color == PieceColor.White) ? 1 : (bh - 2);
                     int ny2 = y + 2 * dir;
-                    if (!piece.hasMoved && y == startRow && InBounds(x, ny2) && IsEmpty(x, ny1) && IsEmpty(x, ny2))
+                    if (pawnsMayDoubleStep && !piece.hasMoved && y == startRow && InBounds(x, ny2) && IsEmpty(x, ny1) && IsEmpty(x, ny2))
                         moves.Add(new Vector2Int(x, ny2));
 
                     int nx1 = x + 1, nyCap = y + dir;
@@ -2745,7 +2763,7 @@ public static class SimRules
                     }
 
                 // CASTLING (simplified, match live: no check detection, just unmoved pieces and empty path)
-                if (!piece.hasMoved)
+                if (castlingEnabled && !piece.hasMoved)
                 {
                     void TryCastle(int rookX, int stepX)
                     {
@@ -2774,7 +2792,7 @@ public static class SimRules
                     }
 
                     TryCastle(0, -1);
-                    TryCastle(7, 1);
+                    TryCastle(bw - 1, 1);
                 }
                 break;
         }
@@ -2786,10 +2804,10 @@ public static class SimRules
     {
         int x = from.x;
         int y = from.y;
-        int bs = state.boardSize;
+        int bw = state.boardWidth, bh = state.boardHeight;
         var color = piece.color;
 
-        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bs && b < bs;
+        bool InBounds(int a, int b) => a >= 0 && b >= 0 && a < bw && b < bh;
         bool IsEmpty(int a, int b) => !state.squares[a, b].HasValue;
         bool IsEnemy(int a, int b)
         {

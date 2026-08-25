@@ -117,9 +117,13 @@ public struct SimProgressCounts
 
 public class SimState
 {
-    // Dimensions (copy from BoardManager)
-    public int boardSize;        // usually 8
-    public int intersectionSize; // usually 9
+    // Dimensions. Width is the x axis (files), height is the y axis (ranks).
+    // Intersections are always one more than squares on each axis, since they are the corners.
+    // SimZobrist indexes with a fixed stride, so width must be <= 8 squares / <= 9 intersections.
+    public int boardWidth;
+    public int boardHeight;
+    public int intersectionWidth;
+    public int intersectionHeight;
 
     // Chess board: null where empty
     public SimPiece?[,] squares; // [boardSize, boardSize]
@@ -177,13 +181,15 @@ public class SimState
     public bool gameOver;
     public PieceColor? winner; // null = not decided or draw
 
-    public SimState(int boardSize, int intersectionSize)
+    public SimState(int boardWidth, int boardHeight)
     {
-        this.boardSize = boardSize;
-        this.intersectionSize = intersectionSize;
+        this.boardWidth = boardWidth;
+        this.boardHeight = boardHeight;
+        this.intersectionWidth = boardWidth + 1;
+        this.intersectionHeight = boardHeight + 1;
 
-        squares = new SimPiece?[boardSize, boardSize];
-        stones = new SimStoneColor[intersectionSize, intersectionSize];
+        squares = new SimPiece?[boardWidth, boardHeight];
+        stones = new SimStoneColor[intersectionWidth, intersectionHeight];
 
         goKoPoint = null;
 
@@ -213,7 +219,7 @@ public class SimState
 
     public SimState DeepCopy()
     {
-        var copy = new SimState(boardSize, intersectionSize)
+        var copy = new SimState(boardWidth, boardHeight)
         {
             currentPlayer = this.currentPlayer,
             phaseOne = this.phaseOne,
@@ -246,18 +252,18 @@ public class SimState
         copy.pendingPawnCornerOptions.AddRange(this.pendingPawnCornerOptions);
 
         // Copy squares
-        for (int x = 0; x < boardSize; x++)
+        for (int x = 0; x < boardWidth; x++)
         {
-            for (int y = 0; y < boardSize; y++)
+            for (int y = 0; y < boardHeight; y++)
             {
                 copy.squares[x, y] = this.squares[x, y];
             }
         }
 
         // Copy stones
-        for (int ix = 0; ix < intersectionSize; ix++)
+        for (int ix = 0; ix < intersectionWidth; ix++)
         {
-            for (int iy = 0; iy < intersectionSize; iy++)
+            for (int iy = 0; iy < intersectionHeight; iy++)
             {
                 copy.stones[ix, iy] = this.stones[ix, iy];
             }

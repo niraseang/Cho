@@ -200,8 +200,8 @@ namespace ChoSim
             s.waitingForPawnStoneChoice = false;
             s.pendingPawnCornerOptions?.Clear();
 
-            for (int x = 0; x < s.boardSize; x++)
-                for (int y = 0; y < s.boardSize; y++)
+            for (int x = 0; x < s.boardWidth; x++)
+                for (int y = 0; y < s.boardHeight; y++)
                 {
                     var sp = s.squares[x, y];
                     if (!sp.HasValue) continue;
@@ -220,9 +220,10 @@ namespace ChoSim
             int maxTurns = 200,
             int randomOpeningDecisions = 0,
             int seed = 0,
-            Action<SimState, SimTurn, IAgent> onDecision = null)
+            Action<SimState, SimTurn, IAgent> onDecision = null,
+            Variant variant = Variant.Standard)
         {
-            var s = Positions.StartPosition();
+            var s = Positions.Create(variant);
             var opening = new RandomAgent(seed, "opening");
             var seen = new Dictionary<ulong, int>();
 
