@@ -17,7 +17,7 @@ import cho_data as cd
 from model import ChoNet, masked_policy_loss
 
 
-def build_dataset(paths, limit=None):
+def build_dataset(paths, limit=None, augment=True):
     """Reads one or more self-play files. Several files form the replay buffer: training on
     only the newest generation makes a network chase its own most recent quirks."""
     if isinstance(paths, str):
@@ -38,14 +38,25 @@ def build_dataset(paths, limit=None):
 
     for s in samples:
         p = cd.decode_position(s["position"])
-        planes.append(cd.encode(p, data["no_progress_limit"]))
-        is_chess.append(p.phase_one)
 
         visits = s["policy_visits"]
         total = visits.sum()
-        targets.append(visits / total if total > 0 else np.full_like(visits, 1.0 / len(visits)))
+        target = visits / total if total > 0 else np.full_like(visits, 1.0 / len(visits))
+
+        planes.append(cd.encode(p, data["no_progress_limit"]))
+        is_chess.append(p.phase_one)
+        targets.append(target)
         idxs.append(s["policy_index"])
         values.append(s["value"])
+
+        if augment:
+            mp = cd.mirror_position(p)
+            planes.append(cd.encode(mp, data["no_progress_limit"]))
+            is_chess.append(mp.phase_one)
+            targets.append(target)
+            idxs.append(np.array([cd.mirror_policy_index(int(i), p.phase_one, p)
+                                  for i in s["policy_index"]], dtype=np.int32))
+            values.append(s["value"])
 
     max_len = max(len(i) for i in idxs)
     n = len(planes)
@@ -85,13 +96,15 @@ def main():
     ap.add_argument("--overfit", type=int, default=0,
                     help="train on this many samples only, to verify the wiring")
     ap.add_argument("--out", default="")
+    ap.add_argument("--no-augment", action="store_true",
+                    help="skip the left-right mirror, which otherwise doubles the data")
     ap.add_argument("--init", default="",
                     help="warm-start from an existing .pt instead of random weights")
     args = ap.parse_args()
 
     torch.manual_seed(0)
 
-    ds = build_dataset(args.data, limit=args.overfit or None)
+    ds = build_dataset(args.data, limit=args.overfit or None, augment=not args.no_augment)
     planes, h, w = ds["shape"]
     bw, bh = ds["board"]
     n = ds["planes"].shape[0]

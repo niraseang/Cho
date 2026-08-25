@@ -94,6 +94,49 @@ def decode_position(buf):
     return p
 
 
+def mirror_position(p):
+    """
+    Left-right mirror. A free doubling of the training set: with castling disabled in the
+    small variant there is no side-dependent rule, so the mirrored position is as legal and
+    as meaningful as the original.
+
+    Deliberately mirrors the POSITION and lets `encode` rebuild the planes, rather than
+    flipping the tensor. The two grids differ in width - a square at cell x maps to bw-1-x
+    while an intersection maps to iw-1-ix - so a single flip of the tensor's width axis
+    would shift the piece planes one cell against the stone planes.
+    """
+    m = Position()
+    m.bw, m.bh, m.iw, m.ih = p.bw, p.bh, p.iw, p.ih
+    m.to_move = p.to_move
+    m.phase_one = p.phase_one
+    m.waiting_territory = p.waiting_territory
+    m.waiting_bonus = p.waiting_bonus
+    m.no_progress = p.no_progress
+
+    m.squares = p.squares[::-1, :, :].copy()
+    m.stones = p.stones[::-1, :].copy()
+
+    m.ko = None if p.ko is None else (p.iw - 1 - p.ko[0], p.ko[1])
+    m.last_moved = None if p.last_moved is None else (p.bw - 1 - p.last_moved[0], p.last_moved[1])
+    return m
+
+
+def mirror_policy_index(idx, is_chess, p):
+    """The matching index under a left-right mirror. Horizontal, so it is independent of the
+    vertical side-to-move canonicalisation already baked into the stored index."""
+    if is_chess:
+        squares = p.bw * p.bh
+
+        def flip_square(i):
+            cy, cx = divmod(i, p.bw)
+            return cy * p.bw + (p.bw - 1 - cx)
+
+        return flip_square(idx // squares) * squares + flip_square(idx % squares)
+
+    cy, cx = divmod(idx, p.iw)
+    return cy * p.iw + (p.iw - 1 - cx)
+
+
 def liberty_map(p):
     """Liberty count of the group each stone belongs to; empty points read 0."""
     out = np.zeros((p.iw, p.ih), dtype=np.int32)
