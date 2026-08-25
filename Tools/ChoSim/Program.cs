@@ -21,6 +21,7 @@ namespace ChoSim
                 case "bench":     Bench(args); return 0;
                 case "match":     Match(args); return 0;
                 case "profile":   Profile(args); return 0;
+                case "selftest":  return SelfTest.Run();
                 default:          Help(); return 0;
             }
         }
@@ -41,6 +42,9 @@ namespace ChoSim
 
   bench      [--depth D] [--plies N] [--time MS] [--seed S] [--agent legacy|search]
              Search from a position at depths 1..D. Reports nodes, nodes/sec, best move.
+
+  selftest
+             Assert the recently changed rules: no-progress draw, superko, suicide.
 
   profile    [--plies N] [--seed S] [--iters I]
              Time the hot functions in isolation, with allocation counts.
