@@ -151,9 +151,20 @@ namespace ChoSim
         const string Magic = "CHOSP2";
 
         public static int Run(int games, int sims, Variant variant, string outPath,
-                              int seed, int openingTemperatureDecisions, bool quiet)
+                              int seed, int openingTemperatureDecisions, bool quiet,
+                              string modelPath = null)
         {
             Positions.ApplyVariantRules(variant);
+
+            // Without a network here, every generation would train on data from the same
+            // uniform-prior searcher and nothing would compound. This is what makes a campaign
+            // a campaign rather than the same run repeated.
+            ISimEvaluator evaluator = null;
+            if (!string.IsNullOrEmpty(modelPath))
+            {
+                evaluator = NnAgent.Get(modelPath, Positions.Create(variant));
+                Console.WriteLine($"self-play guided by {modelPath}");
+            }
 
             var all = new List<Sample>();
             int decisive = 0;
@@ -177,7 +188,8 @@ namespace ChoSim
                         // varied without weakening the rest of the game.
                         temperature = decisions < openingTemperatureDecisions ? 1f : 0f,
                         dirichletWeight = 0.25f,
-                        dirichletAlpha = 0.5f
+                        dirichletAlpha = 0.5f,
+                        evaluator = evaluator
                     };
 
                     var move = SimMcts.Search(s, cfg);

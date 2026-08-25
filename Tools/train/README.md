@@ -128,3 +128,43 @@ Neither beats the alpha-beta engine yet — `search:3` wins comfortably against 
 Note on sample sizes: the 100-simulation result first appeared as 85% over 20 games and
 settled at 69% over 300. Twenty games is not a measurement. `match` is deterministic at
 fixed depth, so a larger run costs only wall-clock.
+
+## Leaving it running
+
+```sh
+./campaign.py                      # runs until you stop it
+./campaign.py --generations 20
+GAMES=500 SIMS=200 ./campaign.py
+```
+
+Each generation: self-play guided by the current best network, train on a replay buffer
+of recent generations, export, verify against PyTorch, then gate the candidate against
+the incumbent and promote only if it scores above `--promote` (default 55%).
+
+Watch it with `tail -f run/campaign/campaign.log`.
+
+**It is safe to interrupt.** Ctrl-C finishes the current generation and stops; state lives
+in `run/campaign/state.json` and is written atomically, so re-running resumes at the next
+generation. Press Ctrl-C twice to stop immediately. Nothing is overwritten - every
+generation's data and network are kept under `run/campaign/`.
+
+**The parity check is a step, not an optional extra.** If the C# side stops reproducing
+PyTorch the campaign halts instead of gating a broken chain and recording the result as
+strength.
+
+Rough cost at defaults (300 games x 150 sims, 100 gate games): about 15 minutes per
+generation on 8 CPU cores, so roughly four an hour. Each generation keeps ~4 MB of data
+and networks.
+
+### Knobs worth knowing
+
+| flag | default | notes |
+|---|---|---|
+| `--games` | 300 | self-play games per generation |
+| `--sims` | 150 | simulations per decision; the network helps most when this is low |
+| `--buffer` | 6 | generations of data trained on at once |
+| `--gate-games` | 100 | fewer than ~60 and the gate is mostly noise |
+| `--promote` | 0.55 | standard AlphaZero threshold |
+
+Do not lower `--gate-games` much. A 20-game sample in this project read 85% where the
+settled figure over 300 games was 69%.

@@ -17,11 +17,22 @@ import cho_data as cd
 from model import ChoNet, masked_policy_loss
 
 
-def build_dataset(path, limit=None):
-    data = cd.read_selfplay(path)
-    samples = data["samples"]
+def build_dataset(paths, limit=None):
+    """Reads one or more self-play files. Several files form the replay buffer: training on
+    only the newest generation makes a network chase its own most recent quirks."""
+    if isinstance(paths, str):
+        paths = [paths]
+
+    samples, no_progress_limit = [], 50
+    for path in paths:
+        data = cd.read_selfplay(path)
+        no_progress_limit = data["no_progress_limit"]
+        samples.extend(data["samples"])
+
     if limit:
         samples = samples[:limit]
+
+    data = {"no_progress_limit": no_progress_limit}
 
     planes, is_chess, idxs, targets, values = [], [], [], [], []
 
@@ -64,7 +75,8 @@ def build_dataset(path, limit=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default="selfplay.bin")
+    ap.add_argument("--data", nargs="+", default=["selfplay.bin"],
+                    help="one or more self-play files; several act as a replay buffer")
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=2e-3)
@@ -73,6 +85,8 @@ def main():
     ap.add_argument("--overfit", type=int, default=0,
                     help="train on this many samples only, to verify the wiring")
     ap.add_argument("--out", default="")
+    ap.add_argument("--init", default="",
+                    help="warm-start from an existing .pt instead of random weights")
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -83,11 +97,19 @@ def main():
     n = ds["planes"].shape[0]
 
     net = ChoNet(planes, h, w, bw, bh, channels=args.channels, blocks=args.blocks)
+
+    # Each generation continues from the last rather than restarting, so early generations
+    # are not thrown away every cycle.
+    if args.init:
+        ck = torch.load(args.init, map_location="cpu")
+        net.load_state_dict(ck["state_dict"])
+        print(f"warm-started from {args.init}")
+
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=1e-4)
 
     chess_frac = ds["is_chess"].float().mean().item()
-    print(f"{n} samples | {planes}x{h}x{w} planes | board {bw}x{bh} | "
-          f"chess nodes {chess_frac:.0%}")
+    print(f"{n} samples from {len(args.data)} file(s) | {planes}x{h}x{w} planes | "
+          f"board {bw}x{bh} | chess nodes {chess_frac:.0%}")
     print(f"net: {net.parameter_count():,} parameters "
           f"({args.blocks} blocks x {args.channels} channels)")
     print(f"policy heads: chess {net.chess_size}, intersection {net.inter_size}")

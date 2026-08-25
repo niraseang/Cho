@@ -53,8 +53,11 @@ namespace ChoSim
              Search from a position at depths 1..D. Reports nodes, nodes/sec, best move.
 
   selfplay   [--games G] [--sims S] [--out FILE] [--seed S] [--temp N] [--quiet]
-             Generate training data with MCTS. --temp is how many opening decisions
-             are sampled by visit count rather than played greedily.
+             [--model FILE]
+             Generate training data with MCTS. --model guides it with an exported
+             network; without one it uses uniform priors and the static eval, which
+             is only useful for the first generation. --temp is how many opening
+             decisions are sampled by visit count rather than played greedily.
 
   goldens    [--out FILE] [--count N]
              Positions paired with the exact planes SimFeatures produced, so the
@@ -78,7 +81,8 @@ namespace ChoSim
              follow piece-taking stones (default true for both)
              SPEC kinds: search / legacy / random / mcts / nn. For mcts and nn the
              number is simulations per decision, not depth (e.g. nn:200).
-             nn also needs --model FILE (an exported .onnx).
+             nn also needs --model FILE (an exported .onnx), or --amodel / --bmodel
+             to pit two different networks against each other.
              Self-play A/B. SPEC is kind:depth, kind in {search, legacy, random}.
              Colors are swapped every game. Example: --a legacy:4 --b search:4");
         }
@@ -257,7 +261,7 @@ namespace ChoSim
         static string _modelPath = "net.onnx";
         static Variant _variant = Variant.Standard;
 
-        static IAgent MakeAgent(string spec, int seed, bool goQuiesce = true)
+        static IAgent MakeAgent(string spec, int seed, bool goQuiesce = true, string model = null)
         {
             var parts = spec.Split(':');
             string kind = parts[0].ToLowerInvariant();
@@ -270,7 +274,7 @@ namespace ChoSim
                 case "random": return new RandomAgent(seed, spec);
                 case "legacy": return new LegacyAgent(cfg);
                 case "mcts":   return new MctsAgent(cfg, seed);
-                case "nn":     return new NnAgent(cfg, seed, _modelPath, Positions.Create(_variant));
+                case "nn":     return new NnAgent(cfg, seed, model ?? _modelPath, Positions.Create(_variant));
                 case "search": return new SearchAgent(cfg);
                 default: throw new ArgumentException($"unknown agent kind '{kind}'");
             }
@@ -278,6 +282,7 @@ namespace ChoSim
 
         static int SelfPlayCmd(Args a)
         {
+            _variant = VariantOf(a);
             return SelfPlay.Run(
                 games: a.Int("games", 10),
                 sims: a.Int("sims", 200),
@@ -285,7 +290,8 @@ namespace ChoSim
                 outPath: a.Str("out", "selfplay.bin"),
                 seed: a.Int("seed", 1),
                 openingTemperatureDecisions: a.Int("temp", 12),
-                quiet: a.Bool("quiet", false)) > 0 ? 0 : 1;
+                quiet: a.Bool("quiet", false),
+                modelPath: a.Str("model", "")) > 0 ? 0 : 1;
         }
 
         static void Match(Args a)
@@ -300,6 +306,12 @@ namespace ChoSim
             Positions.ApplyVariantRules(variant);
             _variant = variant;
             _modelPath = a.Str("model", "net.onnx");
+
+            // Per side, so a candidate network can be gated against its incumbent. Without
+            // this both nn agents load the same file and the match is a network against itself.
+            string aModel = a.Str("amodel", _modelPath);
+            string bModel = a.Str("bmodel", _modelPath);
+            if (aModel != bModel) Console.WriteLine($"models: A={aModel} B={bModel}");
 
             // Termination rules can be switched off to isolate their effect.
             SimRules.superkoEnabled = a.Bool("superko", true);
@@ -319,8 +331,8 @@ namespace ChoSim
             for (int g = 0; g < games; g++)
             {
                 bool aIsWhite = (g % 2) == 0;
-                var agentA = MakeAgent(specA, seed + g, aQuiesce);
-                var agentB = MakeAgent(specB, seed + g + 10_000, bQuiesce);
+                var agentA = MakeAgent(specA, seed + g, aQuiesce, aModel);
+                var agentB = MakeAgent(specB, seed + g + 10_000, bQuiesce, bModel);
 
                 var white = aIsWhite ? agentA : agentB;
                 var black = aIsWhite ? agentB : agentA;
