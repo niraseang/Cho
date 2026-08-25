@@ -1,0 +1,1040 @@
+Diff of every engine change made in this session, against the pre-change originals
+kept in Tools/ChoSim/_backup/. Recorded because git was initialised after the work,
+so the first commit already contains the changes.
+
+═══ SimRules.cs ═══
+--- Tools/ChoSim/_backup/SimRules.cs	2026-08-25 02:02:41
++++ Assets/Scripts/SimRules.cs	2026-08-25 10:38:49
+@@ -11,10 +11,30 @@
+ 
+     // Optional evaluation term: territory matters only through mobility.
+     // Keep weights small so material remains dominant.
++    // Superko: a main stone may not recreate a board position already seen this game.
++    // Requires SimState.positionHistory to be non-null; toggled off for A/B measurement.
++    public static bool superkoEnabled = true;
++
++    // Whether the search also filters superko at interior nodes.
++    //
++    // Off by default, and that is a deliberate trade. Probing superko costs ~380us per Go node
++    // (53 candidates x copy + apply + 64-square surround scan) against ~4us without it, so
++    // enabling it inside the search is ~40x slower per Go node. The engine only ever *plays*
++    // moves generated at the root, and the root is always filtered, so it can never play an
++    // illegal move. All this costs is some accuracy about deep repetition lines - which is
++    // exactly the approximation chess engines make for repetition anyway.
++    //
++    // Turn on to measure the difference; making it affordable means computing the resulting
++    // board hash incrementally instead of copy-and-apply.
++    public static bool superkoInSearch = false;
++
+     public static bool useMobilityEval = false;
+     public static int mobilityWeight = 2; // score per (whiteMoves - blackMoves)
+ 
+     public static List<SimTurn> GenerateAllLegalFullTurns(SimState state)
++        => GenerateAllLegalFullTurns(state, applySuperko: true);
++
++    public static List<SimTurn> GenerateAllLegalFullTurns(SimState state, bool applySuperko)
+     {
+         var turns = new List<SimTurn>();
+ 
+@@ -102,26 +122,14 @@
+             }
+ 
+             // Normal phase-2 main stone placement.
+-            for (int ix = 0; ix < state.intersectionSize; ix++)
+-            {
+-                for (int iy = 0; iy < state.intersectionSize; iy++)
+-                {
+-                    if (state.stones[ix, iy] != SimStoneColor.None) continue;
+-                    if (!IsLegalGoPlacement(state, ix, iy, color)) continue;
++            AddMainStoneTurns(state, color, turns, applySuperko);
+ 
+-                    turns.Add(new SimTurn
+-                    {
+-                        isInitialBlackStoneTurn = false,
+-                        chessMove = null,
+-                        territoryRemoval = null,
+-                        mainStone = new SimStonePlacement
+-                        {
+-                            intersection = new Vector2Int(ix, iy),
+-                            color = color
+-                        },
+-                        bonusPawnStone = null
+-                    });
+-                }
++            // Superko must never leave a player with nothing to play - that would deadlock the
++            // game exactly the way the old no-suicide rule could. If it filtered out everything,
++            // allow the repetition.
++            if (applySuperko && turns.Count == 0)
++            {
++                AddMainStoneTurns(state, color, turns, applySuperko: false);
+             }
+ 
+             return turns;
+@@ -234,6 +242,45 @@
+         return turns;
+     }
+ 
++    /// <summary>
++    /// True if playing a main stone here would recreate a board position already seen this game.
++    /// For the live game, which resolves Go rules through RulesEngine rather than SimState.
++    /// </summary>
++    public static bool IsSuperkoViolation(SimState state, int ix, int iy, SimStoneColor color)
++    {
++        if (!superkoEnabled) return false;
++        if (state?.positionHistory == null) return false;
++        if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return false;
++        if (state.stones[ix, iy] != SimStoneColor.None) return false;
++
++        return state.positionHistory.Contains(BoardHashAfterMainStone(state, ix, iy, color));
++    }
++
++    static void AddMainStoneTurns(SimState state, SimStoneColor color, List<SimTurn> turns, bool applySuperko)
++    {
++        for (int ix = 0; ix < state.intersectionSize; ix++)
++        {
++            for (int iy = 0; iy < state.intersectionSize; iy++)
++            {
++                if (state.stones[ix, iy] != SimStoneColor.None) continue;
++                if (!IsLegalGoPlacement(state, ix, iy, color, applySuperko)) continue;
++
++                turns.Add(new SimTurn
++                {
++                    isInitialBlackStoneTurn = false,
++                    chessMove = null,
++                    territoryRemoval = null,
++                    mainStone = new SimStonePlacement
++                    {
++                        intersection = new Vector2Int(ix, iy),
++                        color = color
++                    },
++                    bonusPawnStone = null
++                });
++            }
++        }
++    }
++
+     public static void ApplyFullTurn(SimState state, SimTurn turn)
+     {
+         if (turn.isInitialBlackStoneTurn)
+@@ -425,22 +472,21 @@
+         var captured = new List<Vector2Int>();
+         int capturedCount = ResolveCapturesAfterPlacement_Sim(state, ix, iy, captured);
+ 
+-        // Suicide rule: if no enemy stones were captured and this stone's group has no liberties,
+-        // remove the self group (live treats it as illegal and undo; here we remove group to match effect).
+-        if (capturedCount == 0 && !HasLiberties_Sim(state, ix, iy))
+-        {
+-            var selfGroup = GetGroup_Sim(state, ix, iy);
+-            foreach (var p in selfGroup)
+-            {
+-                state.stones[p.x, p.y] = SimStoneColor.None;
+-            }
+-            return;
+-        }
++        // Surround capture resolves while the placed stone is still on the board, so a stone
++        // that is about to die by suicide can still complete a four-corner surround on its way
++        // out. Removing our own stones afterwards can never create a new surround (that needs
++        // *enemy* stones), so this only has to run once.
++        CheckAllPiecesForSurroundCapture_Sim(state);
+ 
++        // Suicide is legal. A placement that captures nothing and leaves its own group without
++        // liberties takes that whole group off the board.
++        bool isSuicide = capturedCount == 0 && !HasLiberties_Sim(state, ix, iy);
++
+         // Update simple-ko point for the next player's normal Go move.
+         // Only updated by normal main-stone placements (not bonus pawn stones).
++        // NOTE: this must run on every path, including suicide, or a stale ko point survives.
+         Vector2Int? nextKo = null;
+-        if (capturedCount == 1 && captured.Count == 1)
++        if (!isSuicide && capturedCount == 1 && captured.Count == 1)
+         {
+             var group = GetGroup_Sim(state, ix, iy);
+             if (group.Count == 1)
+@@ -454,8 +500,14 @@
+         }
+         state.goKoPoint = nextKo;
+ 
+-        // After stone changes, capture any chess pieces surrounded by four enemy stones.
+-        CheckAllPiecesForSurroundCapture_Sim(state);
++        if (isSuicide)
++        {
++            var selfGroup = GetGroup_Sim(state, ix, iy);
++            foreach (var p in selfGroup)
++            {
++                state.stones[p.x, p.y] = SimStoneColor.None;
++            }
++        }
+     }
+ 
+     // Apply a pawn bonus stone placement.
+@@ -475,7 +527,10 @@
+         var captured = new List<Vector2Int>();
+         int capturedCount = ResolveCapturesAfterPlacement_Sim(state, ix, iy, captured);
+ 
+-        // Suicide rule: if it captures nothing and has no liberties, remove the self group.
++        // Surround resolves before the stone can die, matching ApplyGoMainStone.
++        CheckAllPiecesForSurroundCapture_Sim(state);
++
++        // Suicide is legal; the group simply comes off the board.
+         if (capturedCount == 0 && !HasLiberties_Sim(state, ix, iy))
+         {
+             var selfGroup = GetGroup_Sim(state, ix, iy);
+@@ -484,9 +539,6 @@
+                 state.stones[p.x, p.y] = SimStoneColor.None;
+             }
+         }
+-
+-        // After stone changes, capture any chess pieces surrounded by four enemy stones.
+-        CheckAllPiecesForSurroundCapture_Sim(state);
+     }
+ 
+     // Apply the forced territory-removal click (remove one enemy stone on a corner of lastMovedSquare).
+@@ -708,7 +760,7 @@
+                state.stones[sx + 1, sy + 1] == enemy;
+     }
+ 
+-    static bool IsLegalGoPlacement(SimState state, int ix, int iy, SimStoneColor color)
++    static bool IsLegalGoPlacement(SimState state, int ix, int iy, SimStoneColor color, bool applySuperko = true)
+     {
+         if (ix < 0 || iy < 0 || ix >= state.intersectionSize || iy >= state.intersectionSize) return false;
+         if (state.stones[ix, iy] != SimStoneColor.None) return false;
+@@ -719,25 +771,41 @@
+             return false;
+         }
+ 
+-        // Standard Go legality (simple ko handled above):
+-        // A placement is legal iff the placed stone's resulting group has at least one liberty
+-        // after resolving any captures (i.e. it's not suicide).
+-        //
+-        // Fast path: if the placement has an immediate empty neighbor, it can't be suicide.
+-        bool hasDirectLiberty =
+-            IsEmptyIntersection(state, ix + 1, iy) ||
+-            IsEmptyIntersection(state, ix - 1, iy) ||
+-            IsEmptyIntersection(state, ix, iy + 1) ||
+-            IsEmptyIntersection(state, ix, iy - 1);
+-        if (hasDirectLiberty) return true;
++        // Suicide is legal in this game. A self-capturing placement is a real (if usually bad)
++        // move: it can complete a four-corner surround on its way off the board, and it
++        // guarantees a player always has somewhere to play.
++        if (applySuperko && superkoEnabled && state.positionHistory != null)
++        {
++            if (state.positionHistory.Contains(BoardHashAfterMainStone(state, ix, iy, color)))
++            {
++                return false;
++            }
++        }
+ 
+-        // Slow path: simulate placement + captures and test resulting liberties.
+-        // This correctly allows connecting moves (no immediate liberty) that join to a group
+-        // which has liberties elsewhere.
+-        SimState tmp = state.DeepCopy();
+-        tmp.stones[ix, iy] = color;
+-        ResolveCapturesAfterPlacement_Sim(tmp, ix, iy, null);
+-        return HasLiberties_Sim(tmp, ix, iy);
++        return true;
++    }
++
++    /// <summary>
++    /// Board hash of the position this main stone would produce, with the turn handed over.
++    /// Plays the move on a throwaway copy: correct first, and cheap enough to keep until the
++    /// harness says otherwise.
++    /// </summary>
++    static ulong BoardHashAfterMainStone(SimState state, int ix, int iy, SimStoneColor color)
++    {
++        var probe = state.DeepCopy();
++        probe.positionHistory = null; // the probe must not consult or mutate the history
++
++        ApplyGoMainStone(probe, new SimStonePlacement
++        {
++            intersection = new Vector2Int(ix, iy),
++            color = color
++        });
++
++        // ApplyGoMainStone does not hand over the turn; ApplyFullTurn does. The superko key
++        // includes side to move, so the probe has to reflect the handover.
++        probe.currentPlayer = (state.currentPlayer == PieceColor.White) ? PieceColor.Black : PieceColor.White;
++
++        return SimZobrist.ComputeBoardHash(probe);
+     }
+ 
+     static bool IsEmptyIntersection(SimState state, int ix, int iy)
+
+═══ SimSearch.cs ═══
+--- Tools/ChoSim/_backup/SimSearch.cs	2026-08-25 02:02:41
++++ Assets/Scripts/SimSearch.cs	2026-08-25 10:37:06
+@@ -24,6 +24,10 @@
+     // Keep a per-search TT to reduce allocations and avoid stale cross-position interactions.
+     static readonly Dictionary<ulong, TTEntry> _tt = new Dictionary<ulong, TTEntry>(capacity: 200_000);
+ 
++    // Instrumentation: nodes visited during the most recent FindBestTurn call.
++    // Read by the headless harness (Tools/ChoSim) to measure nodes/sec and pruning.
++    public static long NodesSearched;
++
+     public static SimTurn FindBestTurn(SimState root, int maxDepth = 4, int timeBudgetMs = 1000)
+     {
+         if (root == null) return default;
+@@ -31,6 +35,7 @@
+         if (timeBudgetMs < 1) timeBudgetMs = 1;
+ 
+         _tt.Clear();
++        NodesSearched = 0;
+ 
+         // Root move generation can be non-trivial (especially in phase 2 with many Go candidates).
+         // The time budget is intended primarily for the search itself, so start the stopwatch after
+@@ -90,9 +95,18 @@
+                 SimRules.ApplyFullTurn(child, t);
+ 
+                 bool samePlayerToMove = child.currentPlayer == root.currentPlayer;
+-                int score = samePlayerToMove
+-                    ? Negamax(child, depth - 1, int.MinValue + 1, int.MaxValue - 1, sw, timeBudgetMs, ref aborted)
+-                    : -Negamax(child, depth - 1, int.MinValue + 1, int.MaxValue - 1, sw, timeBudgetMs, ref aborted);
++                bool pushed = PushHistory(child, root, out ulong histHash);
++                int score;
++                try
++                {
++                    score = samePlayerToMove
++                        ? Negamax(child, depth - 1, int.MinValue + 1, int.MaxValue - 1, sw, timeBudgetMs, ref aborted)
++                        : -Negamax(child, depth - 1, int.MinValue + 1, int.MaxValue - 1, sw, timeBudgetMs, ref aborted);
++                }
++                finally
++                {
++                    if (pushed) child.positionHistory.Pop(histHash);
++                }
+                 if (aborted) break;
+ 
+                 evaluatedAtDepth++;
+@@ -133,6 +147,8 @@
+             return 0;
+         }
+ 
++        NodesSearched++;
++
+         // Transposition table lookup.
+         // Values are always from the current side-to-move perspective (negamax convention).
+         int origAlpha = alpha;
+@@ -169,7 +185,7 @@
+             return q;
+         }
+ 
+-        var turns = SimRules.GenerateAllLegalFullTurns(state);
++        var turns = SimRules.GenerateAllLegalFullTurns(state, SimRules.superkoInSearch);
+         if (turns == null || turns.Count == 0)
+         {
+             int leaf = SimRules.EvaluateForSideToMove(state);
+@@ -197,9 +213,18 @@
+             SimRules.ApplyFullTurn(child, t);
+ 
+             bool samePlayerToMove = child.currentPlayer == state.currentPlayer;
+-            int score = samePlayerToMove
+-                ? Negamax(child, depth - 1, alpha, beta, sw, timeBudgetMs, ref aborted)
+-                : -Negamax(child, depth - 1, -beta, -alpha, sw, timeBudgetMs, ref aborted);
++            bool pushed = PushHistory(child, state, out ulong histHash);
++            int score;
++            try
++            {
++                score = samePlayerToMove
++                    ? Negamax(child, depth - 1, alpha, beta, sw, timeBudgetMs, ref aborted)
++                    : -Negamax(child, depth - 1, -beta, -alpha, sw, timeBudgetMs, ref aborted);
++            }
++            finally
++            {
++                if (pushed) child.positionHistory.Pop(histHash);
++            }
+             if (aborted) break;
+ 
+             if (score > best) best = score;
+@@ -227,6 +252,8 @@
+             return 0;
+         }
+ 
++        NodesSearched++;
++
+         int origAlpha = alpha;
+         ulong key = SimZobrist.ComputeHash(state);
+         int depthKey = -remainingPlies; // distinguish from main-search depths
+@@ -288,9 +315,18 @@
+             SimRules.ApplyFullTurn(child, t);
+ 
+             bool samePlayerToMove = child.currentPlayer == state.currentPlayer;
+-            int score = samePlayerToMove
+-                ? Quiescence(child, alpha, beta, remainingPlies - 1, sw, timeBudgetMs, ref aborted)
+-                : -Quiescence(child, -beta, -alpha, remainingPlies - 1, sw, timeBudgetMs, ref aborted);
++            bool pushed = PushHistory(child, state, out ulong histHash);
++            int score;
++            try
++            {
++                score = samePlayerToMove
++                    ? Quiescence(child, alpha, beta, remainingPlies - 1, sw, timeBudgetMs, ref aborted)
++                    : -Quiescence(child, -beta, -alpha, remainingPlies - 1, sw, timeBudgetMs, ref aborted);
++            }
++            finally
++            {
++                if (pushed) child.positionHistory.Pop(histHash);
++            }
+             if (aborted) break;
+ 
+             if (score >= beta) return beta;
+@@ -301,6 +337,23 @@
+         return alpha;
+     }
+ 
++    /// <summary>
++    /// Records the position the search just moved into, so superko sees the search path and not
++    /// just the moves actually played. Only turn handovers are game positions, so mid-turn nodes
++    /// are skipped. Every push must be matched by a Pop - see the finally blocks at each call.
++    /// </summary>
++    static bool PushHistory(SimState child, SimState parent, out ulong hash)
++    {
++        hash = 0UL;
++        if (!SimRules.superkoInSearch) return false;
++        if (child.positionHistory == null) return false;
++        if (child.currentPlayer == parent.currentPlayer) return false;
++
++        hash = SimZobrist.ComputeBoardHash(child);
++        child.positionHistory.Push(hash);
++        return true;
++    }
++
+     static void StoreTT(ulong key, int depth, int value, int origAlpha, int beta)
+     {
+         Bound bound;
+@@ -318,7 +371,7 @@
+ 
+     static List<SimTurn> GenerateCaptureTurns(SimState state)
+     {
+-        var all = SimRules.GenerateAllLegalFullTurns(state);
++        var all = SimRules.GenerateAllLegalFullTurns(state, SimRules.superkoInSearch);
+         if (all == null || all.Count == 0) return new List<SimTurn>();
+ 
+         var captures = new List<SimTurn>();
+
+═══ SimTypes.cs ═══
+--- Tools/ChoSim/_backup/SimTypes.cs	2026-08-25 02:02:41
++++ Assets/Scripts/SimTypes.cs	2026-08-25 10:33:07
+@@ -62,6 +62,42 @@
+     public SimStonePlacement? bonusPawnStone;
+ }
+ 
++/// <summary>
++/// Board positions already seen this game, for the superko restriction.
++///
++/// Deliberately a reference type that SimState.DeepCopy shares rather than clones: the search
++/// walks one shared history, pushing on the way down and popping on the way back up. Cloning it
++/// per node would cost more than the rest of a node put together.
++/// </summary>
++public class SimPositionHistory
++{
++    readonly Dictionary<ulong, int> _counts = new Dictionary<ulong, int>(256);
++
++    public void Push(ulong hash)
++    {
++        _counts.TryGetValue(hash, out int n);
++        _counts[hash] = n + 1;
++    }
++
++    public void Pop(ulong hash)
++    {
++        if (!_counts.TryGetValue(hash, out int n)) return;
++        if (n <= 1) _counts.Remove(hash);
++        else _counts[hash] = n - 1;
++    }
++
++    public bool Contains(ulong hash) => _counts.ContainsKey(hash);
++
++    public void Clear() => _counts.Clear();
++
++    public SimPositionHistory Clone()
++    {
++        var c = new SimPositionHistory();
++        foreach (var kv in _counts) c._counts[kv.Key] = kv.Value;
++        return c;
++    }
++}
++
+ public class SimState
+ {
+     // Dimensions (copy from BoardManager)
+@@ -110,6 +146,10 @@
+     public Vector2Int? whiteKingSquare;
+     public Vector2Int? blackKingSquare;
+ 
++    // Board positions already seen this game. Null disables the superko restriction,
++    // which is what most unit-style uses of SimState want.
++    public SimPositionHistory positionHistory;
++
+     // Terminal state info
+     public bool gameOver;
+     public PieceColor? winner; // null = not decided or draw
+@@ -166,6 +206,10 @@
+             whiteKingSquare = this.whiteKingSquare,
+             blackKingSquare = this.blackKingSquare,
+             goKoPoint = this.goKoPoint,
++
++            // Shared by reference on purpose - see SimPositionHistory.
++            positionHistory = this.positionHistory,
++
+             gameOver = this.gameOver,
+             winner = this.winner
+         };
+
+═══ SimZobrist.cs ═══
+--- Tools/ChoSim/_backup/SimZobrist.cs	2026-08-25 02:02:41
++++ Assets/Scripts/SimZobrist.cs	2026-08-25 10:32:53
+@@ -222,4 +222,57 @@
+             return ((ulong)a << 32) ^ b;
+         }
+     }
++
++    /// <summary>
++    /// Hash of the *board* only: piece identity and placement, stone placement, and side to move.
++    /// Deliberately excludes ko point, castling rights, en passant, phase flags and last-moved
++    /// square, so two positions with the same pieces and stones compare equal.
++    ///
++    /// This is the superko key. Excluding those extras makes the rule stricter (more positions
++    /// count as "the same"), which is the point: it catches more cycles.
++    /// </summary>
++    public static ulong ComputeBoardHash(SimState state)
++    {
++        if (state == null) return 0UL;
++
++        ulong h = 0UL;
++
++        for (int x = 0; x < state.boardSize; x++)
++        {
++            for (int y = 0; y < state.boardSize; y++)
++            {
++                var sp = state.squares[x, y];
++                if (!sp.HasValue) continue;
++
++                var p = sp.Value;
++                int colorIndex = (p.color == PieceColor.White) ? 0 : 1;
++                int typeIndex = PieceTypeToIndex(p.type);
++                if (typeIndex < 0) continue;
++
++                int sq = (y * 8) + x;
++
++                // Flag slot 0 always: hasMoved / justDoubleStepped are not part of the board.
++                h ^= PieceKeys[colorIndex, typeIndex, sq, 0];
++            }
++        }
++
++        int maxIx = Math.Min(state.intersectionSize, 9);
++        int maxIy = Math.Min(state.intersectionSize, 9);
++        for (int ix = 0; ix < maxIx; ix++)
++        {
++            for (int iy = 0; iy < maxIy; iy++)
++            {
++                var c = state.stones[ix, iy];
++                if (c == SimStoneColor.None) continue;
++
++                int colorIndex = (c == SimStoneColor.White) ? 0 : 1;
++                h ^= StoneKeys[colorIndex, ix + 9 * iy];
++            }
++        }
++
++        if (state.currentPlayer == PieceColor.Black) h ^= SideToMoveKey;
++
++        return h;
++    }
++
+ }
+
+═══ SimStateBuilder.cs ═══
+--- Tools/ChoSim/_backup/SimStateBuilder.cs	2026-08-25 02:02:41
++++ Assets/Scripts/SimStateBuilder.cs	2026-08-25 10:39:14
+@@ -144,6 +144,10 @@
+         //   castling rights
+         //   gameOver / winner
+ 
++        // Superko history is shared by reference, not copied: the AI's root move list has to be
++        // filtered against the same positions the live game has actually reached.
++        s.positionHistory = gc.PositionHistory;
++
+         return s;
+     }
+ }
+
+═══ BoardManager.cs ═══
+--- Tools/ChoSim/_backup/BoardManager.cs	2026-08-25 02:18:25
++++ Assets/Scripts/BoardManager.cs	2026-08-25 02:31:10
+@@ -15,6 +15,30 @@
+     public GameObject flipButtonObject;
+     public Sprite flipButtonSprite; // sprite to use for the flip button visual
+ 
++    // Toggles the built-in AI on/off from inside the game, so play mode is not
++    // an editor-only setting. Follows the same pattern as the flip button.
++    public GameObject aiButtonObject;
++    public Sprite aiButtonSprite;   // optional; a coloured square is used when null
++
++    [Tooltip("Colour when neither side is AI.")]
++    public Color aiButtonOffColor = new Color(0.45f, 0.45f, 0.45f);
++
++    [Tooltip("Colour when only Black is AI.")]
++    public Color aiButtonBlackColor = new Color(0.25f, 0.28f, 0.34f);
++
++    [Tooltip("Colour when only White is AI.")]
++    public Color aiButtonWhiteColor = new Color(0.90f, 0.88f, 0.80f);
++
++    [Tooltip("Colour when both sides are AI.")]
++    public Color aiButtonBothColor = new Color(0.30f, 0.80f, 0.40f);
++
++    [Tooltip("World size of the AI button's text label. Raise if the label looks too small.")]
++    public float aiButtonLabelScale = 0.05f;
++
++    // Text label on the AI button. Null when no builtin font is available, in which
++    // case the button still works and signals state by colour alone.
++    TextMesh aiButtonLabel;
++
+     // NEW: logical board orientation; false = white at bottom, true = flipped
+     public bool isFlipped = false;
+ 
+@@ -53,12 +77,14 @@
+         InitializeGrid();
+         CreateCheckeredSquares();
+         CreateOrConfigureFlipButton();
++        CreateOrConfigureAiButton();
+     }
+ 
+     void Start()
+     {
+-        // Ensure the button has a collider so central click handler can raycast it
++        // Ensure the buttons have colliders so central click handler can raycast them
+         ConfigureFlipButtonCollider();
++        ConfigureAiButtonCollider();
+     }
+ 
+     void CreateOrConfigureFlipButton()
+@@ -99,10 +125,134 @@
+         if (col == null)
+         {
+             col = flipButtonObject.AddComponent<BoxCollider2D>();
++        }
++        col.isTrigger = false;
++    }
++
++    void CreateOrConfigureAiButton()
++    {
++        if (aiButtonObject == null)
++        {
++            aiButtonObject = new GameObject("AiToggleButton");
++            aiButtonObject.transform.SetParent(transform, false);
++        }
++
++        var sr = aiButtonObject.GetComponent<SpriteRenderer>();
++        if (sr == null)
++        {
++            sr = aiButtonObject.AddComponent<SpriteRenderer>();
++        }
++        // Unlike the flip button, this one has no art assigned by default, and a
++        // SpriteRenderer with a null sprite draws nothing. Fall back to a generated
++        // square so the control is visible (and sized) out of the box.
++        sr.sprite = aiButtonSprite != null ? aiButtonSprite : GetFallbackButtonSprite();
++        sr.sortingOrder = 100;        // render on top
++
++        // Sit directly below the flip button, in the same left-hand column.
++        float boardHeight = boardSize * squareSize;
++        float centerY = origin.y + boardHeight * 0.5f;
++        float leftX = origin.x - squareSize * 1.0f;
++        aiButtonObject.transform.position = new Vector3(leftX, centerY - squareSize * 1.2f, -1f);
++
++        aiButtonObject.transform.localScale = new Vector3(squareSize * 0.8f, squareSize * 0.8f, 1f);
++
++        CreateOrConfigureAiButtonLabel(aiButtonObject.transform.position);
++    }
++
++    // The label is a sibling rather than a child so it does not inherit the button's scale.
++    void CreateOrConfigureAiButtonLabel(Vector3 buttonPos)
++    {
++        if (aiButtonLabel == null)
++        {
++            var labelObj = new GameObject("AiToggleLabel");
++            labelObj.transform.SetParent(transform, false);
++            aiButtonLabel = labelObj.AddComponent<TextMesh>();
++        }
++
++        // TextMesh renders blank unless its MeshRenderer uses the font's own material.
++        var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
++        if (font == null)
++        {
++            Destroy(aiButtonLabel.gameObject);
++            aiButtonLabel = null;
++            return;
+         }
++
++        aiButtonLabel.font = font;
++        var mr = aiButtonLabel.GetComponent<MeshRenderer>();
++        if (mr != null)
++        {
++            mr.sharedMaterial = font.material;
++            mr.sortingOrder = 101; // just above the button face
++        }
++
++        aiButtonLabel.anchor = TextAnchor.MiddleCenter;
++        aiButtonLabel.alignment = TextAlignment.Center;
++        aiButtonLabel.fontSize = 48;
++        aiButtonLabel.characterSize = aiButtonLabelScale * squareSize;
++
++        aiButtonLabel.transform.position = new Vector3(buttonPos.x, buttonPos.y, buttonPos.z - 0.1f);
++    }
++
++    static Sprite _fallbackButtonSprite;
++
++    // A 1x1 white square, one world unit across, tinted at runtime via SpriteRenderer.color.
++    static Sprite GetFallbackButtonSprite()
++    {
++        if (_fallbackButtonSprite != null) return _fallbackButtonSprite;
++
++        var tex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
++        tex.SetPixel(0, 0, Color.white);
++        tex.Apply();
++        tex.filterMode = FilterMode.Point;
++
++        _fallbackButtonSprite = Sprite.Create(
++            tex,
++            new Rect(0f, 0f, 1f, 1f),
++            new Vector2(0.5f, 0.5f),
++            pixelsPerUnit: 1f);
++
++        return _fallbackButtonSprite;
++    }
++
++    void ConfigureAiButtonCollider()
++    {
++        if (aiButtonObject == null) return;
++
++        var col = aiButtonObject.GetComponent<Collider2D>();
++        if (col == null)
++        {
++            col = aiButtonObject.AddComponent<BoxCollider2D>();
++        }
+         col.isTrigger = false;
+     }
+ 
++    // Called by GameController whenever AI control changes, so the button reflects state.
++    public void SetAiButtonState(bool whiteAi, bool blackAi)
++    {
++        if (aiButtonObject == null) return;
++
++        Color bg;
++        string label;
++
++        if (whiteAi && blackAi)      { bg = aiButtonBothColor;  label = "AI\nBOTH"; }
++        else if (blackAi)            { bg = aiButtonBlackColor; label = "AI\nBLACK"; }
++        else if (whiteAi)            { bg = aiButtonWhiteColor; label = "AI\nWHITE"; }
++        else                         { bg = aiButtonOffColor;   label = "AI\nOFF"; }
++
++        var sr = aiButtonObject.GetComponent<SpriteRenderer>();
++        if (sr != null) sr.color = bg;
++
++        if (aiButtonLabel != null)
++        {
++            aiButtonLabel.text = label;
++
++            // Pick whichever of black/white text stays readable on this background.
++            float luminance = 0.299f * bg.r + 0.587f * bg.g + 0.114f * bg.b;
++            aiButtonLabel.color = luminance > 0.5f ? Color.black : Color.white;
++        }
++    }
++
+     public void InitializeGrid()
+     {
+         squares = new Piece[boardSize, boardSize];
+
+═══ GameController.cs ═══
+--- Tools/ChoSim/_backup/GameController.cs	2026-08-25 02:18:25
++++ Assets/Scripts/GameController.cs	2026-08-25 10:38:49
+@@ -100,6 +100,10 @@
+     // but NOT to extra pawn bonus stone placements.
+     public Vector2Int? goKoPoint = null;
+ 
++    // Board positions already reached this game, for the superko restriction.
++    // Shared with the AI through SimStateBuilder so its root move list is filtered too.
++    public SimPositionHistory PositionHistory { get; } = new SimPositionHistory();
++
+     // Track previous values so we can detect runtime changes in Update
+     private PlayMode _lastPlayMode;
+     private bool _lastWhiteIsAI;
+@@ -134,7 +138,11 @@
+ 
+         _chessMoveHistory.Clear();
+         boardManager.SetupInitialPieces();
++        RefreshAiButtonVisual();
+ 
++        PositionHistory.Clear();
++        RecordPositionForSuperko();
++
+         // If Black is AI at start and the special stone is pending, place it immediately.
+         if (blackIsAI && blackInitialStonePending)
+         {
+@@ -213,6 +221,8 @@
+             // Keep cached flags in sync with playMode-driven values.
+             _lastWhiteIsAI = whiteIsAI;
+             _lastBlackIsAI = blackIsAI;
++
++            RefreshAiButtonVisual();
+         }
+ 
+         if (whiteIsAI != _lastWhiteIsAI || blackIsAI != _lastBlackIsAI)
+@@ -226,6 +236,8 @@
+             {
+                 RunAiBlackInitialStonePlacement();
+             }
++
++            RefreshAiButtonVisual();
+         }
+ 
+         // IMPORTANT: before White's first move, Black must place one initial Go stone.
+@@ -244,6 +256,10 @@
+             if (TryHandleFlipButtonClick_Legacy())
+                 return;
+ 
++            // Then the in-game AI on/off button
++            if (TryHandleAiToggleButtonClick_Legacy())
++                return;
++
+             // Special case: while the initial black Go stone is still pending,
+             // allow Black (human) to place it by click even if it's currently an AI turn
+             // (eg. because White is AI).
+@@ -288,10 +304,82 @@
+         if (hit.collider.gameObject == boardManager.flipButtonObject)
+         {
+             boardManager.FlipBoardVisual();
++            return true;
++        }
++
++        return false;
++    }
++
++    bool TryHandleAiToggleButtonClick_Legacy()
++    {
++        if (boardManager == null || boardManager.aiButtonObject == null)
++            return false;
++
++        Camera cam = Camera.main;
++        if (cam == null) return false;
++
++        Vector3 worldPos = cam.ScreenToWorldPoint(Input.mousePosition);
++        Vector2 worldPos2D = new Vector2(worldPos.x, worldPos.y);
++
++        RaycastHit2D hit = Physics2D.Raycast(worldPos2D, Vector2.zero);
++        if (hit.collider == null)
++        {
++            return false;
++        }
++
++        if (hit.collider.gameObject == boardManager.aiButtonObject)
++        {
++            CycleAiMode();
+             return true;
+         }
+ 
+         return false;
++    }
++
++    // Step the AI setting during play: off -> Black -> White -> both -> off.
++    // Also usable from a uGUI Button's OnClick.
++    public void CycleAiMode()
++    {
++        if (!whiteIsAI && !blackIsAI)
++        {
++            // off -> Black is AI (human keeps White)
++            playMode = PlayMode.HumanVsAI;
++            humanSide = PieceColor.White;
++        }
++        else if (blackIsAI && !whiteIsAI)
++        {
++            // Black -> White is AI (human takes Black)
++            playMode = PlayMode.HumanVsAI;
++            humanSide = PieceColor.Black;
++        }
++        else if (whiteIsAI && !blackIsAI)
++        {
++            // White -> both sides AI
++            playMode = PlayMode.AIVsAI;
++        }
++        else
++        {
++            // both -> off
++            playMode = PlayMode.HumanVsHuman;
++        }
++
++        // Apply immediately rather than waiting for Update's playMode change-detection,
++        // which would miss a repeat of the same playMode (eg. HumanVsAI with humanSide
++        // flipped) and would also miss flags changed by hotkey.
++        _lastPlayMode = playMode;
++        ApplyPlayModeToAIFlags();
++        RefreshAiButtonVisual();
++
++        // _lastWhiteIsAI/_lastBlackIsAI are deliberately left stale: Update's flag-change
++        // block picks them up and places Black's pending opening stone if the AI just took
++        // that side.
++        Debug.Log($"[GameController] AI white={whiteIsAI} black={blackIsAI} (human plays {humanSide})");
++    }
++
++    void RefreshAiButtonVisual()
++    {
++        if (boardManager == null) return;
++        boardManager.SetAiButtonState(whiteIsAI, blackIsAI);
+     }
+ 
+     // Original legacy click handler: reads mouse position directly
+@@ -390,6 +478,12 @@
+                     return;
+                 }
+ 
++                // Superko: this placement may not recreate a position already seen this game.
++                if (ViolatesSuperko(nearest.x, nearest.y))
++                {
++                    return;
++                }
++
+                 bool placed = PlaceStoneSafe(nearest.x, nearest.y, currentPlayer == PieceColor.White ? StoneColor.White : StoneColor.Black);
+                 if (placed)
+                 {
+@@ -397,20 +491,18 @@
+                     var captured = rulesEngine.ResolveCapturesAfterPlacement(nearest.x, nearest.y);
+                     foreach (var s in captured) RemoveStone(s);
+ 
+-                    // Suicide rule: if no enemy stones were captured and the placed stone's group has no liberties,
+-                    // then the move is illegal; undo the placement and return without ending the turn.
+-                    if (captured.Count == 0 && !rulesEngine.HasLiberties(nearest.x, nearest.y))
+-                    {
+-                        var selfGroup = rulesEngine.GetGroupStones(nearest.x, nearest.y);
+-                        foreach (var s in selfGroup) RemoveStone(s);
+-                        return;
+-                    }
++                    // Surround capture resolves while the placed stone is still on the board, so a
++                    // stone about to die by suicide can still complete a four-corner surround.
++                    CheckAllPiecesForSurroundCapture();
+ 
++                    // Suicide is legal: the move stands and ends the turn, but the group dies.
++                    bool isSuicide = captured.Count == 0 && !rulesEngine.HasLiberties(nearest.x, nearest.y);
++
+                     // Update ko point for the next normal Go move.
+                     // Simple ko condition: captured exactly one stone, and the placed stone is a single-stone group
+                     // with exactly one liberty after the capture.
+                     Vector2Int? nextKo = null;
+-                    if (captured.Count == 1)
++                    if (!isSuicide && captured.Count == 1)
+                     {
+                         var placedGroup = rulesEngine.GetGroupStones(nearest.x, nearest.y);
+                         if (placedGroup.Count == 1)
+@@ -424,8 +516,11 @@
+                     }
+                     goKoPoint = nextKo;
+ 
+-                    // After any stone changes, check for surrounded pieces
+-                    CheckAllPiecesForSurroundCapture();
++                    if (isSuicide)
++                    {
++                        var selfGroup = rulesEngine.GetGroupStones(nearest.x, nearest.y);
++                        foreach (var s in selfGroup) RemoveStone(s);
++                    }
+ 
+                     EndTurn();
+                 }
+@@ -451,17 +546,15 @@
+         var captured = rulesEngine.ResolveCapturesAfterPlacement(nearest.x, nearest.y);
+         foreach (var s in captured) RemoveStone(s);
+ 
+-        // Suicide rule: if it captures nothing and has no liberties, it cannot remain
+-        if (captured.Count == 0 && !rulesEngine.HasLiberties(nearest.x, nearest.y))
+-        {
+-            var selfGroup = rulesEngine.GetGroupStones(nearest.x, nearest.y);
+-            foreach (var s in selfGroup) RemoveStone(s);
+-            return; // Black must choose another intersection
+-        }
++        // Surround resolves before the stone can die.
++        CheckAllPiecesForSurroundCapture();
+ 
++        // Suicide is legal; the group simply comes off the board.
++        bool isSuicide = captured.Count == 0 && !rulesEngine.HasLiberties(nearest.x, nearest.y);
++
+         // Update ko point for White's next normal Go move.
+         Vector2Int? nextKo = null;
+-        if (captured.Count == 1)
++        if (!isSuicide && captured.Count == 1)
+         {
+             var placedGroup = rulesEngine.GetGroupStones(nearest.x, nearest.y);
+             if (placedGroup.Count == 1)
+@@ -475,8 +568,11 @@
+         }
+         goKoPoint = nextKo;
+ 
+-        // After any stone changes, check for surrounded pieces
+-        CheckAllPiecesForSurroundCapture();
++        if (isSuicide)
++        {
++            var selfGroup = rulesEngine.GetGroupStones(nearest.x, nearest.y);
++            foreach (var s in selfGroup) RemoveStone(s);
++        }
+ 
+         // One-time initial stone is now done; White proceeds to normal Phase One
+         blackInitialStonePending = false;
+@@ -1236,6 +1332,9 @@
+             RemoveStone(s);
+         }
+ 
++        // Surround resolves before the stone can die, matching the main-stone rule.
++        CheckAllPiecesForSurroundCapture();
++
+         // If no enemy was captured and this new stone's group has no liberties, it dies immediately
+         if (captured.Count == 0 && !rulesEngine.HasLiberties(chosen.x, chosen.y))
+         {
+@@ -1246,9 +1345,6 @@
+             }
+         }
+ 
+-        // After any stone changes, check for surrounded pieces
+-        CheckAllPiecesForSurroundCapture();
+-
+         waitingForPawnStoneChoice = false;
+         pendingPawnCornerOptions.Clear();
+     }
+@@ -1425,6 +1521,9 @@
+         legalMoves.Clear();
+         boardManager.ClearHighlights();
+ 
++        // Superko: remember the position we just reached so it cannot be recreated.
++        RecordPositionForSuperko();
++
+         // Clear justDoubleStepped on all pawns of the side to move now
+         for (int x = 0; x < boardManager.boardSize; x++)
+         for (int y = 0; y < boardManager.boardSize; y++)
+@@ -1437,6 +1536,35 @@
+         }
+     }
+ 
++    void RecordPositionForSuperko()
++    {
++        if (boardManager == null) return;
++
++        var snapshot = SimStateBuilder.FromLiveGame(this, boardManager);
++        if (snapshot == null) return;
++
++        PositionHistory.Push(SimZobrist.ComputeBoardHash(snapshot));
++    }
++
++    // Would a main stone here recreate a position already seen? Runs once per placement
++    // attempt, so the cost of snapshotting the board is irrelevant here.
++    bool ViolatesSuperko(int ix, int iy)
++    {
++        if (boardManager == null) return false;
++
++        var snapshot = SimStateBuilder.FromLiveGame(this, boardManager);
++        if (snapshot == null) return false;
++
++        var color = currentPlayer == PieceColor.White ? SimStoneColor.White : SimStoneColor.Black;
++
++        // If this is the only placement available, superko has to yield rather than
++        // leave the player with nowhere legal to play.
++        var legal = SimRules.GenerateAllLegalFullTurns(snapshot, applySuperko: true);
++        if (legal != null && legal.Count == 0) return false;
++
++        return SimRules.IsSuperkoViolation(snapshot, ix, iy, color);
++    }
++
+     bool IsAIToMove()
+     {
+         if (currentPlayer == PieceColor.White)
+
