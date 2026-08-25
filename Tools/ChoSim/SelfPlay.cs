@@ -148,7 +148,7 @@ namespace ChoSim
 
     public static class SelfPlay
     {
-        const string Magic = "CHOSP1";
+        const string Magic = "CHOSP2";
 
         public static int Run(int games, int sims, Variant variant, string outPath,
                               int seed, int openingTemperatureDecisions, bool quiet)
@@ -247,6 +247,7 @@ namespace ChoSim
             w.Write(System.Text.Encoding.ASCII.GetBytes(Magic));
             w.Write((byte)(variant == Variant.Small ? 1 : 0));
             w.Write(SimFeatures.PlaneCount);
+            w.Write(SimRules.noProgressTurnLimit);
             w.Write(samples.Count);
 
             foreach (var s in samples)
@@ -265,6 +266,57 @@ namespace ChoSim
             }
         }
 
+        /// <summary>
+        /// Writes positions together with the exact planes SimFeatures produced for them.
+        /// The training pipeline re-implements the encoder in Python; this is what lets that
+        /// port be verified against the original instead of assumed to match.
+        /// </summary>
+        public static int WriteGoldens(string path, int count, Variant variant, int seed)
+        {
+            Positions.ApplyVariantRules(variant);
+
+            using var fs = File.Create(path);
+            using var w = new BinaryWriter(fs);
+
+            w.Write(System.Text.Encoding.ASCII.GetBytes("CHOGD1"));
+            w.Write((byte)(variant == Variant.Small ? 1 : 0));
+            w.Write(SimFeatures.PlaneCount);
+            w.Write(SimRules.noProgressTurnLimit);
+            w.Write(count);
+
+            var rng = new Random(seed);
+            int written = 0;
+
+            while (written < count)
+            {
+                // Walk a random game and snapshot along the way, so the set spans openings,
+                // midgames, every phase, and both sides to move.
+                var s = Positions.Create(variant);
+                var agent = new RandomAgent(rng.Next());
+
+                for (int step = 0; step < 160 && written < count && !s.gameOver; step++)
+                {
+                    if (rng.NextDouble() < 0.35)
+                    {
+                        var pos = PositionCodec.Encode(s);
+                        var tensor = new float[SimFeatures.TensorSize(s)];
+                        SimFeatures.Encode(s, tensor);
+
+                        w.Write((ushort)pos.Length);
+                        w.Write(pos);
+                        w.Write(tensor.Length);
+                        foreach (var v in tensor) w.Write(v);
+                        written++;
+                    }
+                    Driver.Step(s, agent, out _);
+                }
+            }
+
+            Console.WriteLine($"{written} golden positions -> {path} " +
+                              $"({new FileInfo(path).Length / 1024.0:F0} KB)");
+            return 0;
+        }
+
         /// <summary>Reads a file back and re-derives planes, so a corrupt writer cannot go unnoticed.</summary>
         public static int Inspect(string path)
         {
@@ -276,15 +328,18 @@ namespace ChoSim
 
             int variant = r.ReadByte();
             int planes = r.ReadInt32();
+            int noProgressLimit = r.ReadInt32();
             int count = r.ReadInt32();
 
             // Variant switches live as statics on SimRules, so a file written under one set of
             // rules must be read back under the same ones. Without this the inspector re-derives
             // moves with double-steps and castling that the writer never offered.
             Positions.ApplyVariantRules(variant == 1 ? Variant.Small : Variant.Standard);
+            SimRules.noProgressTurnLimit = noProgressLimit;
 
             Console.WriteLine($"{path}");
-            Console.WriteLine($"  variant {(variant == 1 ? "Small" : "Standard")}, {planes} planes, {count:N0} samples");
+            Console.WriteLine($"  variant {(variant == 1 ? "Small" : "Standard")}, {planes} planes, " +
+                              $"noProgressLimit {noProgressLimit}, {count:N0} samples");
 
             int totalVisits = 0, maxBranch = 0, bad = 0;
             double valueSum = 0;

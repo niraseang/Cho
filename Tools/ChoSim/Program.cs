@@ -24,6 +24,9 @@ namespace ChoSim
                 case "selftest":  return SelfTest.Run();
                 case "selfplay":  return SelfPlayCmd(args);
                 case "inspect":   return SelfPlay.Inspect(args.Str("in", "selfplay.bin"));
+                case "goldens":   return SelfPlay.WriteGoldens(args.Str("out", "goldens.bin"),
+                                                               args.Int("count", 500),
+                                                               VariantOf(args), args.Int("seed", 1));
                 default:          Help(); return 0;
             }
         }
@@ -48,6 +51,10 @@ namespace ChoSim
   selfplay   [--games G] [--sims S] [--out FILE] [--seed S] [--temp N] [--quiet]
              Generate training data with MCTS. --temp is how many opening decisions
              are sampled by visit count rather than played greedily.
+
+  goldens    [--out FILE] [--count N]
+             Positions paired with the exact planes SimFeatures produced, so the
+             Python port of the encoder can be verified rather than trusted.
 
   inspect    [--in FILE]
              Read a self-play file back, decode every position and re-derive planes.

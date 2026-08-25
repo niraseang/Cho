@@ -1,0 +1,6 @@
+# PyTorch 2.2.2 is the last release with macOS x86_64 wheels, so an Intel Mac is
+# pinned there. On Linux or Apple Silicon any recent 2.x works.
+torch>=2.2,<3
+# torch 2.2.x is built against the numpy 1.x ABI and fails at import with numpy 2.x
+# ("Numpy is not available"), so the ceiling matters as much as the floor.
+numpy>=1.24,<2
