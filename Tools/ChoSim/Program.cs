@@ -51,6 +51,8 @@ namespace ChoSim
 
   match      [--a SPEC] [--b SPEC] [--games G] [--turns T] [--seed S] [--openings N]
              [--superko true|false] [--noprogress N]   (N=0 disables the draw rule)
+             SPEC kinds: search / legacy / random / mcts. For mcts the number is
+             simulations per decision, not depth (e.g. mcts:400).
              Self-play A/B. SPEC is kind:depth, kind in {search, legacy, random}.
              Colors are swapped every game. Example: --a legacy:4 --b search:4");
         }
@@ -238,6 +240,7 @@ namespace ChoSim
             {
                 case "random": return new RandomAgent(seed, spec);
                 case "legacy": return new LegacyAgent(cfg);
+                case "mcts":   return new MctsAgent(cfg, seed);
                 case "search": return new SearchAgent(cfg);
                 default: throw new ArgumentException($"unknown agent kind '{kind}'");
             }
@@ -309,6 +312,7 @@ namespace ChoSim
             var s = Positions.Create(VariantOf(a));
             var rng = new RandomAgent(seed);
             for (int i = 0; i < plies && !s.gameOver; i++) Driver.Step(s, rng, out _);
+            var s2 = s;
 
             // Every operation is warmed up BEFORE any of them is timed. Timing them
             // one-at-a-time lets tiered JIT promote shared code during the first
@@ -344,6 +348,23 @@ namespace ChoSim
             Console.WriteLine();
             Console.WriteLine("A search node pays ComputeHash + GenerateAllLegalFullTurns once,");
             Console.WriteLine("then DeepCopy + ApplyFullTurn for every child it visits.");
+
+            // MCTS throughput: the leaf evaluation here is SimRules.Evaluate, which is the slot
+            // a value network takes over. Simulations/sec sets the self-play budget.
+            Console.WriteLine();
+            int sims = a.Int("sims", 4000);
+            var cfg = new SimMcts.Config { simulations = sims, seed = 1 };
+
+            SimMcts.Search(s2, cfg);   // warm up
+
+            var swm = Stopwatch.StartNew();
+            SimMcts.Search(s2, cfg);
+            swm.Stop();
+
+            double persec = sims / Math.Max(swm.Elapsed.TotalSeconds, 1e-9);
+            Console.WriteLine($"MCTS: {sims:N0} simulations in {swm.Elapsed.TotalMilliseconds:F0} ms "
+                            + $"= {persec:N0} sims/sec ({SimMcts.NodesExpanded:N0} nodes expanded)");
+            Console.WriteLine($"      leaf cost budget for a network: {1e6 / persec:F1} us/sim at current speed");
         }
 
         static void Time(string label, int iters, Action f)

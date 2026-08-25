@@ -131,6 +131,40 @@ namespace ChoSim
         }
     }
 
+    /// <summary>MCTS with uniform priors and SimRules.Evaluate as the leaf value.</summary>
+    public sealed class MctsAgent : IAgent
+    {
+        readonly AgentConfig _cfg;
+        readonly SimMcts.Config _mcts;
+        public string Name => _cfg.Name;
+
+        public MctsAgent(AgentConfig cfg, int seed)
+        {
+            _cfg = cfg;
+            _mcts = new SimMcts.Config
+            {
+                simulations = Math.Max(1, cfg.Depth),   // Depth carries the simulation count
+                seed = seed
+            };
+        }
+
+        public SimTurn? Choose(SimState state)
+        {
+            var moves = SimRules.GenerateAllLegalFullTurns(state);
+            if (moves == null || moves.Count == 0) return null;
+
+            Knobs.Apply(_cfg);
+            var t = SimMcts.Search(state, _mcts);
+
+            if (!t.chessMove.HasValue && !t.mainStone.HasValue
+                && !t.bonusPawnStone.HasValue && !t.territoryRemoval.HasValue)
+            {
+                return moves[0];
+            }
+            return t;
+        }
+    }
+
     public enum GameOutcome { WhiteWins, BlackWins, Draw, TurnLimit }
 
     public sealed class GameResult

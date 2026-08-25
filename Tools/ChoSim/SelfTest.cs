@@ -21,10 +21,113 @@ namespace ChoSim
             SuperkoBlocksARepeat();
             SuicideIsLegalAndRemovesTheGroup();
             SuicideCompletesSurroundBeforeDying();
+            MctsFindsWinBySameSidePath();
+            MctsFindsWinAcrossHandover();
+            MctsBeatsRandom();
 
             Console.WriteLine();
             Console.WriteLine($"{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
+        }
+
+        // ------------------------------------------------------------ MCTS
+
+        /// <summary>
+        /// Winning with a chess move: the capture happens on a node with the SAME player to
+        /// move as the root, so the value must NOT be negated on the way back up.
+        /// </summary>
+        static void MctsFindsWinBySameSidePath()
+        {
+            Console.WriteLine("MCTS: win without a handover");
+
+            var s = new SimState(5, 6);
+            s.currentPlayer = PieceColor.White;
+            s.phaseOne = true;
+            s.blackInitialStonePending = false;
+            s.positionHistory = new SimPositionHistory();
+
+            s.squares[0, 0] = new SimPiece { color = PieceColor.White, type = PieceType.Rook };
+            s.squares[4, 0] = new SimPiece { color = PieceColor.White, type = PieceType.King };
+            s.squares[0, 5] = new SimPiece { color = PieceColor.Black, type = PieceType.King };
+            s.whiteKingSquare = new Vector2Int(4, 0);
+            s.blackKingSquare = new Vector2Int(0, 5);
+
+            var move = SimMcts.Search(s, new SimMcts.Config { simulations = 300, seed = 1 });
+
+            bool takesKing = move.chessMove.HasValue
+                          && move.chessMove.Value.from == new Vector2Int(0, 0)
+                          && move.chessMove.Value.to == new Vector2Int(0, 5);
+
+            Check("plays the rook capture", takesKing, Positions.DescribeTurn(move));
+        }
+
+        /// <summary>
+        /// Winning with a stone: the main stone hands the turn over, so the terminal value is
+        /// scored from the LOSER's perspective and must be negated back to the root. If the
+        /// handover sign were wrong, the root would read this winning move as a loss and avoid it.
+        /// </summary>
+        static void MctsFindsWinAcrossHandover()
+        {
+            Console.WriteLine("MCTS: win across a handover");
+
+            var s = new SimState(5, 6);
+            s.currentPlayer = PieceColor.White;
+            s.phaseOne = false;               // main-stone decision
+            s.blackInitialStonePending = false;
+            s.positionHistory = new SimPositionHistory();
+
+            s.squares[0, 0] = new SimPiece { color = PieceColor.White, type = PieceType.King };
+            s.squares[2, 2] = new SimPiece { color = PieceColor.Black, type = PieceType.King };
+            s.whiteKingSquare = new Vector2Int(0, 0);
+            s.blackKingSquare = new Vector2Int(2, 2);
+
+            // Three of the four corners of square (2,2); (3,3) completes the surround.
+            s.stones[2, 2] = SimStoneColor.White;
+            s.stones[3, 2] = SimStoneColor.White;
+            s.stones[2, 3] = SimStoneColor.White;
+
+            var move = SimMcts.Search(s, new SimMcts.Config { simulations = 300, seed = 1 });
+
+            bool completes = move.mainStone.HasValue
+                          && move.mainStone.Value.intersection == new Vector2Int(3, 3);
+
+            Check("plays the surrounding stone", completes, Positions.DescribeTurn(move));
+
+            // And confirm the position really is winning, so the test cannot pass vacuously.
+            var after = s.DeepCopy();
+            SimRules.ApplyFullTurn(after, new SimTurn
+            {
+                mainStone = new SimStonePlacement
+                {
+                    intersection = new Vector2Int(3, 3),
+                    color = SimStoneColor.White
+                }
+            });
+            Check("that stone does win", after.gameOver && after.winner == PieceColor.White,
+                  $"gameOver={after.gameOver} winner={(after.winner.HasValue ? after.winner.ToString() : "null")}");
+        }
+
+        static void MctsBeatsRandom()
+        {
+            Console.WriteLine("MCTS: strength floor");
+
+            int wins = 0, played = 0;
+            for (int g = 0; g < 4; g++)
+            {
+                var mcts = new MctsAgent(new AgentConfig { Name = "mcts", Depth = 120 }, seed: g);
+                var rand = new RandomAgent(1000 + g);
+
+                bool mctsIsWhite = (g % 2) == 0;
+                var r = Driver.PlayGame(mctsIsWhite ? mcts : rand,
+                                        mctsIsWhite ? rand : mcts,
+                                        maxTurns: 120, randomOpeningDecisions: 0, seed: g,
+                                        variant: Variant.Small);
+                played++;
+                if ((r.Outcome == GameOutcome.WhiteWins && mctsIsWhite) ||
+                    (r.Outcome == GameOutcome.BlackWins && !mctsIsWhite)) wins++;
+            }
+
+            Check("wins at least 3 of 4 against random", wins >= 3, $"won {wins}/{played}");
         }
 
         static void Check(string name, bool ok, string detail = "")
