@@ -170,6 +170,56 @@ namespace ChoSim
         }
     }
 
+    /// <summary>MCTS driven by the exported network for both priors and leaf values.</summary>
+    public sealed class NnAgent : IAgent
+    {
+        // Sessions are expensive to create and stateless to use, so share one per model file
+        // rather than reloading for every game.
+        static readonly Dictionary<string, OnnxEvaluator> _cache = new Dictionary<string, OnnxEvaluator>();
+
+        readonly AgentConfig _cfg;
+        readonly SimMcts.Config _mcts;
+        public string Name => _cfg.Name;
+
+        public static OnnxEvaluator Get(string modelPath, SimState shape)
+        {
+            if (!_cache.TryGetValue(modelPath, out var ev))
+            {
+                ev = new OnnxEvaluator(modelPath, SimFeatures.PlaneCount,
+                                       shape.intersectionHeight, shape.intersectionWidth);
+                _cache[modelPath] = ev;
+            }
+            return ev;
+        }
+
+        public NnAgent(AgentConfig cfg, int seed, string modelPath, SimState shape)
+        {
+            _cfg = cfg;
+            _mcts = new SimMcts.Config
+            {
+                simulations = Math.Max(1, cfg.Depth),
+                seed = seed,
+                evaluator = Get(modelPath, shape)
+            };
+        }
+
+        public SimTurn? Choose(SimState state)
+        {
+            var moves = SimRules.GenerateAllLegalFullTurns(state);
+            if (moves == null || moves.Count == 0) return null;
+
+            Knobs.Apply(_cfg);
+            var t = SimMcts.Search(state, _mcts);
+
+            if (!t.chessMove.HasValue && !t.mainStone.HasValue
+                && !t.bonusPawnStone.HasValue && !t.territoryRemoval.HasValue)
+            {
+                return moves[0];
+            }
+            return t;
+        }
+    }
+
     public enum GameOutcome { WhiteWins, BlackWins, Draw, TurnLimit }
 
     public sealed class GameResult

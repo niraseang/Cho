@@ -24,6 +24,10 @@ namespace ChoSim
                 case "selftest":  return SelfTest.Run();
                 case "selfplay":  return SelfPlayCmd(args);
                 case "inspect":   return SelfPlay.Inspect(args.Str("in", "selfplay.bin"));
+                case "parity":    return OnnxEvaluator.Parity(args.Str("in", "parity.bin"),
+                                                              args.Str("model", "net.onnx"),
+                                                              VariantOf(args),
+                                                              double.Parse(args.Str("tol", "1e-4")));
                 case "goldens":   return SelfPlay.WriteGoldens(args.Str("out", "goldens.bin"),
                                                                args.Int("count", 500),
                                                                VariantOf(args), args.Int("seed", 1));
@@ -56,6 +60,9 @@ namespace ChoSim
              Positions paired with the exact planes SimFeatures produced, so the
              Python port of the encoder can be verified rather than trusted.
 
+  parity     [--in parity.bin] [--model net.onnx] [--tol 1e-4]
+             Check this side reproduces PyTorch's outputs for the same positions.
+
   inspect    [--in FILE]
              Read a self-play file back, decode every position and re-derive planes.
 
@@ -69,8 +76,9 @@ namespace ChoSim
              [--superko true|false] [--noprogress N]   (N=0 disables the draw rule)
              [--agoquiesce / --bgoquiesce true|false]  per-side: does quiescence
              follow piece-taking stones (default true for both)
-             SPEC kinds: search / legacy / random / mcts. For mcts the number is
-             simulations per decision, not depth (e.g. mcts:400).
+             SPEC kinds: search / legacy / random / mcts / nn. For mcts and nn the
+             number is simulations per decision, not depth (e.g. nn:200).
+             nn also needs --model FILE (an exported .onnx).
              Self-play A/B. SPEC is kind:depth, kind in {search, legacy, random}.
              Colors are swapped every game. Example: --a legacy:4 --b search:4");
         }
@@ -246,6 +254,9 @@ namespace ChoSim
 
         // ---------------------------------------------------------------- match
 
+        static string _modelPath = "net.onnx";
+        static Variant _variant = Variant.Standard;
+
         static IAgent MakeAgent(string spec, int seed, bool goQuiesce = true)
         {
             var parts = spec.Split(':');
@@ -259,6 +270,7 @@ namespace ChoSim
                 case "random": return new RandomAgent(seed, spec);
                 case "legacy": return new LegacyAgent(cfg);
                 case "mcts":   return new MctsAgent(cfg, seed);
+                case "nn":     return new NnAgent(cfg, seed, _modelPath, Positions.Create(_variant));
                 case "search": return new SearchAgent(cfg);
                 default: throw new ArgumentException($"unknown agent kind '{kind}'");
             }
@@ -286,6 +298,8 @@ namespace ChoSim
             int openings = a.Int("openings", 6);
             var variant = VariantOf(a);
             Positions.ApplyVariantRules(variant);
+            _variant = variant;
+            _modelPath = a.Str("model", "net.onnx");
 
             // Termination rules can be switched off to isolate their effect.
             SimRules.superkoEnabled = a.Bool("superko", true);

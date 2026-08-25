@@ -33,6 +33,12 @@ public static class SimMcts
         public float temperature = 0f;
 
         public int seed = 0;
+
+        /// <summary>
+        /// Network backing. Null keeps the built-in behaviour: uniform priors and
+        /// SimRules.Evaluate as the leaf value, which is what the tree was validated against.
+        /// </summary>
+        public ISimEvaluator evaluator = null;
     }
 
     sealed class Node
@@ -83,7 +89,7 @@ public static class SimMcts
         }
 
         var rootNode = new Node { toMove = root.currentPlayer };
-        ExpandWith(rootNode, rootMoves);
+        ExpandWith(rootNode, rootMoves, PriorsFor(root, rootMoves, cfg));
         if (cfg.dirichletWeight > 0f) AddDirichletNoise(rootNode, cfg, rng);
 
         for (int i = 0; i < cfg.simulations; i++)
@@ -123,12 +129,11 @@ public static class SimMcts
     static PieceColor Other(PieceColor c) =>
         c == PieceColor.White ? PieceColor.Black : PieceColor.White;
 
-    static void ExpandWith(Node node, List<SimTurn> moves)
+    static void ExpandWith(Node node, List<SimTurn> moves, float[] priors)
     {
         node.children = new Node[moves.Count];
-        node.prior = new float[moves.Count];
+        node.prior = priors;
 
-        float uniform = 1f / moves.Count;
         for (int i = 0; i < moves.Count; i++)
         {
             node.children[i] = new Node
@@ -137,10 +142,49 @@ public static class SimMcts
                 parent = node,
                 toMove = EndsTurn(moves[i]) ? Other(node.toMove) : node.toMove
             };
-            node.prior[i] = uniform;   // replaced by the policy head later
         }
 
         NodesExpanded++;
+    }
+
+    /// <summary>Uniform priors when there is no network; used at the root, where no value is
+    /// needed. Interior nodes take priors and value together from one evaluator call.</summary>
+    static float[] PriorsFor(SimState state, List<SimTurn> moves, Config cfg)
+    {
+        var priors = new float[moves.Count];
+
+        if (cfg.evaluator != null)
+        {
+            cfg.evaluator.Evaluate(state, moves, priors);
+            Normalise(priors);
+        }
+        else
+        {
+            float uniform = 1f / moves.Count;
+            for (int i = 0; i < priors.Length; i++) priors[i] = uniform;
+        }
+
+        return priors;
+    }
+
+    /// <summary>Guards against an evaluator returning unnormalised or degenerate priors.</summary>
+    static void Normalise(float[] p)
+    {
+        double sum = 0;
+        for (int i = 0; i < p.Length; i++)
+        {
+            if (p[i] < 0 || float.IsNaN(p[i])) p[i] = 0;
+            sum += p[i];
+        }
+
+        if (sum <= 1e-8)
+        {
+            float uniform = 1f / p.Length;
+            for (int i = 0; i < p.Length; i++) p[i] = uniform;
+            return;
+        }
+
+        for (int i = 0; i < p.Length; i++) p[i] = (float)(p[i] / sum);
     }
 
     static int SelectChild(Node node, Config cfg)
@@ -187,10 +231,20 @@ public static class SimMcts
             return 0.0;
         }
 
-        ExpandWith(node, moves);
+        // With a network, priors and value come from a single forward pass.
+        if (cfg.evaluator != null)
+        {
+            var priors = new float[moves.Count];
+            float value = cfg.evaluator.Evaluate(state, moves, priors);
+            Normalise(priors);
+            ExpandWith(node, moves, priors);
+            return Math.Max(-1.0, Math.Min(1.0, value));
+        }
+
+        ExpandWith(node, moves, PriorsFor(state, moves, cfg));
 
         // Leaf value from the static evaluator, squashed into tanh's range. This is exactly the
-        // slot the value head will take over.
+        // slot the value head takes over.
         int score = SimRules.EvaluateForSideToMove(state);
         return Math.Tanh(score / (double)cfg.evalScale);
     }

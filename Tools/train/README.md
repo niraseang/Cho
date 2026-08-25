@@ -83,3 +83,28 @@ Step 4 closes the loop: export to ONNX, load it in C# via `Microsoft.ML.OnnxRunt
 have `SimMcts` call the network instead of `SimRules.Evaluate` for leaves and instead of
 uniform priors. The benchmark to beat is **12.5% against `search:3`**, which is where MCTS
 with uniform priors currently sits.
+
+## Step 4: closing the loop
+
+```sh
+# train, export, and write a parity file in one pass
+./.venv/bin/python train.py --data sp.bin --epochs 30 --out net.pt
+../ChoSim/bin/Release/net10.0/ChoSim goldens --variant small --count 400 --out goldens.bin
+./.venv/bin/python export.py --model net.pt --out net.onnx --positions goldens.bin --parity parity.bin
+
+# verify the C# side reproduces PyTorch before trusting any game result
+../ChoSim/bin/Release/net10.0/ChoSim parity --variant small --in parity.bin --model net.onnx
+
+# play with it
+../ChoSim/bin/Release/net10.0/ChoSim match --variant small --a nn:400 --b mcts:400 \
+    --games 40 --model net.onnx
+```
+
+`parity` is the one to run after touching anything in the chain. It decodes each position
+in C#, encodes planes with SimFeatures, runs the ONNX model, and compares against what
+PyTorch produced for the same position - so the encoder port, the export and the runtime
+are all covered by a single check.
+
+`SimMcts` talks to `ISimEvaluator`, not to ONNX. The runtime dependency lives here in
+ChoSim only, so the Unity assembly stays clean and could back the same interface with
+Sentis instead.
