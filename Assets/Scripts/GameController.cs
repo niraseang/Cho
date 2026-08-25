@@ -109,6 +109,14 @@ public class GameController : MonoBehaviour
     // but NOT to extra pawn bonus stone placements.
     public Vector2Int? goKoPoint = null;
 
+    // Mid-turn flow state, exposed so SimStateBuilder can hand the AI a snapshot that knows
+    // which decision it is actually facing. Without these the sim always looks like a plain
+    // main-stone node, which is why the AI used to need a separate code path per phase.
+    public bool PhaseOne => phaseOne;
+    public bool WaitingForTerritoryClick => waitingForTerritoryClick;
+    public bool WaitingForPawnStoneChoice => waitingForPawnStoneChoice;
+    public Vector2Int LastMovedSquare => lastMovedSquare;
+
     // Board positions already reached this game, for the superko restriction.
     // Shared with the AI through SimStateBuilder so its root move list is filtered too.
     public SimPositionHistory PositionHistory { get; } = new SimPositionHistory();
@@ -1635,74 +1643,100 @@ public class GameController : MonoBehaviour
             return;
         }
 
-        if (phaseOne)
-        {
-            RunAiPhaseOne_UsingSim();
-        }
-        else if (waitingForTerritoryClick)
-        {
-            // TODO: implement AI for territory removal using sim
-            RunAiTerritoryRemoval();
-        }
-        else if (waitingForPawnStoneChoice)
-        {
-            // TODO: implement AI for pawn bonus stone using sim
-            RunAiPawnBonusStone();
-        }
-        else
-        {
-            // Phase two Go stone placement (keep existing logic for now)
-            RunAiPhaseTwoStonePlacement();
-        }
+        RunAiDecision();
     }
 
-    void RunAiPhaseOne_UsingSim()
+    /// <summary>
+    /// One search for every decision in the turn.
+    ///
+    /// This used to be four separate paths: a real search for the chess move, depth-0 greedy
+    /// picks for territory removal and the pawn bonus stone, and a second search for the main
+    /// stone with its depth clamped to 1-2. Territory and bonus choices were therefore made
+    /// with no lookahead at all, and the stone was searched far shallower than the chess move.
+    ///
+    /// Now the snapshot carries the mid-turn flow state, so SimRules.GenerateAllLegalFullTurns
+    /// already knows which of the four decisions is pending and the same search handles all of
+    /// them at full depth.
+    /// </summary>
+    void RunAiDecision()
     {
         if (boardManager == null) return;
 
-        // Apply evaluation knobs for this search.
         SimRules.useMobilityEval = aiUseMobilityEval;
         SimRules.mobilityWeight = aiMobilityWeight;
 
-        // 1. Build sim snapshot
         SimState root = SimStateBuilder.FromLiveGame(this, boardManager);
         if (root == null) return;
 
-        // 2. Ask search for best turn (currently chess-only)
-        SimTurn best = SimSearch.FindBestTurn(root, aiMaxDepth, aiTimeBudgetMs);
-        if (!best.chessMove.HasValue)
-        {
-            // No chess move found; end phase one and let phase two proceed.
-            phaseOne = false;
-            return;
-        }
+        // Territory removals and pawn bonus stones offer at most four options and are close to
+        // forced, so they do not deserve a full time slice. Spending it there is what made an
+        // AI turn cost several budgets end to end.
+        bool minorDecision = root.waitingForTerritoryClick || root.waitingForPawnStoneChoice;
+        int budget = Mathf.Max(1, minorDecision ? aiTimeBudgetMs / 4 : aiTimeBudgetMs);
 
-        SimChessMove move = best.chessMove.Value;
+        SimTurn best = SimSearch.FindBestTurn(root, aiMaxDepth, budget);
 
-        if (aiLogMissedQueenCaptures)
+        if (aiLogMissedQueenCaptures && root.phaseOne)
         {
             LogIfMissedImmediateQueenCapture(root, best);
         }
 
-        // 3. Apply to live game using existing ExecuteMove
-        Piece piece = boardManager.GetSquarePiece(move.from);
-        if (piece == null || piece.color != currentPlayer)
+        if (!ApplyAiDecision(best))
         {
-            // Inconsistent state; bail out
+            // The search found nothing applicable. Clear whatever the game is waiting on so a
+            // turn can still complete rather than stalling.
+            if (phaseOne) phaseOne = false;
+            else if (waitingForTerritoryClick) waitingForTerritoryClick = false;
+            else if (waitingForPawnStoneChoice)
+            {
+                waitingForPawnStoneChoice = false;
+                pendingPawnCornerOptions?.Clear();
+            }
+        }
+    }
+
+    /// <summary>Plays a searched decision through the same handlers a human click would use.</summary>
+    bool ApplyAiDecision(SimTurn turn)
+    {
+        if (turn.chessMove.HasValue)
+        {
+            var move = turn.chessMove.Value;
+            Piece piece = boardManager.GetSquarePiece(move.from);
+            if (piece == null || piece.color != currentPlayer) return false;
+
+            ExecuteMove(piece, move.to, move.promotion);
+
+            selectedPiece = null;
+            legalMoves.Clear();
+            boardManager.ClearHighlights();
             phaseOne = false;
-            return;
+            return true;
         }
 
-        ExecuteMove(piece, move.to, move.promotion);
+        if (turn.territoryRemoval.HasValue)
+        {
+            var pt = turn.territoryRemoval.Value.intersection;
+            HandleTerritoryRemovalClick(boardManager.IntersectionToWorld(pt.x, pt.y));
+            return true;
+        }
 
-        // Clear selection/highlights like a human move
-        selectedPiece = null;
-        legalMoves.Clear();
-        boardManager.ClearHighlights();
+        if (turn.bonusPawnStone.HasValue)
+        {
+            var pt = turn.bonusPawnStone.Value.intersection;
+            HandlePawnExtraStoneChoiceClick(boardManager.IntersectionToWorld(pt.x, pt.y));
+            return true;
+        }
 
-        // End phase one after AI move
-        phaseOne = false;
+        if (turn.mainStone.HasValue)
+        {
+            var pt = turn.mainStone.Value.intersection;
+            HandleBoardClick_Legacy(boardManager.IntersectionToWorld(pt.x, pt.y));
+            return true;
+        }
+
+        return false;
     }
+
 
     void LogIfMissedImmediateQueenCapture(SimState root, SimTurn chosen)
     {
@@ -1770,161 +1804,6 @@ public class GameController : MonoBehaviour
         HandleBlackInitialStonePlacement(worldPos);
     }
 
-    // Placeholder AI for territory removal: pick the first removable enemy stone by reusing click logic.
-    void RunAiTerritoryRemoval()
-    {
-        if (!waitingForTerritoryClick || boardManager == null) return;
 
-        var enemyStoneColor = currentPlayer == PieceColor.White ? StoneColor.Black : StoneColor.White;
-        var sq = lastMovedSquare;
 
-        // Defensive: if we don't have a last moved square, we can't legally remove.
-        if (sq.x < 0 || sq.y < 0)
-        {
-            waitingForTerritoryClick = false;
-            return;
-        }
-
-        // Only corners of the last moved square are legal removal targets.
-        var options = new List<Intersection>();
-        var c1 = boardManager.GetIntersection(sq.x, sq.y);
-        var c2 = boardManager.GetIntersection(sq.x + 1, sq.y);
-        var c3 = boardManager.GetIntersection(sq.x, sq.y + 1);
-        var c4 = boardManager.GetIntersection(sq.x + 1, sq.y + 1);
-
-        void TryAdd(Intersection inter)
-        {
-            if (inter == null) return;
-            if (inter.occupant == null) return;
-            if (inter.occupant.color != enemyStoneColor) return;
-            options.Add(inter);
-        }
-
-        TryAdd(c1);
-        TryAdd(c2);
-        TryAdd(c3);
-        TryAdd(c4);
-
-        if (options.Count == 0)
-        {
-            // Nothing removable (should be rare). Clear the flag to avoid stalling.
-            waitingForTerritoryClick = false;
-            return;
-        }
-
-        // Choose the removal that is best in the sim.
-        Intersection bestChoice = options[0];
-        int bestScore = int.MinValue;
-
-        SimState root = SimStateBuilder.FromLiveGame(this, boardManager);
-        if (root != null)
-        {
-            root.phaseOne = false;
-            SimStoneColor expectedEnemy = enemyStoneColor == StoneColor.White ? SimStoneColor.White : SimStoneColor.Black;
-
-            foreach (var opt in options)
-            {
-                SimState child = root.DeepCopy();
-                SimRules.ApplyTerritoryRemoval(child, new Vector2Int(opt.x, opt.y), expectedEnemy);
-                int score = SimRules.EvaluateForSideToMove(child);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestChoice = opt;
-                }
-            }
-        }
-
-        var choice = bestChoice;
-        Vector2 worldPos = boardManager.IntersectionToWorld(choice.x, choice.y);
-        HandleTerritoryRemovalClick(worldPos);
-    }
-
-    // Placeholder AI for pawn bonus stone choice.
-    void RunAiPawnBonusStone()
-    {
-        if (!waitingForPawnStoneChoice || boardManager == null) return;
-
-        // If no options are available, clear to avoid stalling.
-        if (pendingPawnCornerOptions == null || pendingPawnCornerOptions.Count == 0)
-        {
-            waitingForPawnStoneChoice = false;
-            pendingPawnCornerOptions?.Clear();
-            return;
-        }
-
-        // Choose the bonus placement that is best in the sim.
-        Intersection bestChoice = pendingPawnCornerOptions[0];
-        int bestScore = int.MinValue;
-
-        SimState root = SimStateBuilder.FromLiveGame(this, boardManager);
-        if (root != null)
-        {
-            root.phaseOne = false;
-            SimStoneColor c = currentPlayer == PieceColor.White ? SimStoneColor.White : SimStoneColor.Black;
-
-            foreach (var opt in pendingPawnCornerOptions)
-            {
-                SimState child = root.DeepCopy();
-                SimRules.ApplyGoBonusPawnStone(child, new SimStonePlacement
-                {
-                    intersection = new Vector2Int(opt.x, opt.y),
-                    color = c
-                });
-
-                int score = SimRules.EvaluateForSideToMove(child);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestChoice = opt;
-                }
-            }
-        }
-
-        var choice = bestChoice;
-        Vector2 worldPos = boardManager.IntersectionToWorld(choice.x, choice.y);
-        HandlePawnExtraStoneChoiceClick(worldPos);
-    }
-
-    // Placeholder AI for phase-two stone placement: keep existing random/naive behavior.
-    void RunAiPhaseTwoStonePlacement()
-    {
-        if (boardManager == null || rulesEngine == null) return;
-
-        // Build sim snapshot and force phaseTwo.
-        SimState root = SimStateBuilder.FromLiveGame(this, boardManager);
-        if (root == null) return;
-        root.phaseOne = false;
-
-        // Apply evaluation knobs for this search.
-        SimRules.useMobilityEval = aiUseMobilityEval;
-        SimRules.mobilityWeight = aiMobilityWeight;
-
-        // Phase 2 is very branchy (up to ~81 legal moves). Keep depth modest.
-        int depth = Mathf.Clamp(aiMaxDepth, 1, 2);
-        int budgetMs = Mathf.Max(1, aiTimeBudgetMs);
-
-        SimTurn best = SimSearch.FindBestTurn(root, depth, budgetMs);
-        if (!best.mainStone.HasValue)
-        {
-            // Fallback to random if sim couldn't find a legal stone.
-            var candidates = new List<Intersection>();
-            for (int ix = 0; ix < boardManager.intersectionSize; ix++)
-            for (int iy = 0; iy < boardManager.intersectionSize; iy++)
-            {
-                var inter = boardManager.intersections[ix, iy];
-                if (inter == null || inter.occupant != null) continue;
-                candidates.Add(inter);
-            }
-            if (candidates.Count == 0) return;
-            var choice = candidates[Random.Range(0, candidates.Count)];
-            Vector2 wp = boardManager.IntersectionToWorld(choice.x, choice.y);
-            HandleBoardClick_Legacy(wp);
-            return;
-        }
-
-        var placement = best.mainStone.Value;
-        Vector2 worldPos = boardManager.IntersectionToWorld(placement.intersection.x, placement.intersection.y);
-        HandleBoardClick_Legacy(worldPos);
-    }
 }

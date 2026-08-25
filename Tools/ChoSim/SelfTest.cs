@@ -29,6 +29,7 @@ namespace ChoSim
             FeaturesPlaneCounts();
             FeaturesMoveIndexRoundTrip();
             PositionCodecRoundTrip();
+            QueenChainsOrthogonally();
 
             Console.WriteLine();
             Console.WriteLine($"{_passed} passed, {_failed} failed");
@@ -411,6 +412,53 @@ namespace ChoSim
             Check("every field survives encode/decode", fieldMismatch == 0, $"{fieldMismatch}/{tested}");
             Check("legal moves are identical after a round-trip", moveMismatch == 0, $"{moveMismatch}/{tested}");
             Check("planes are identical after a round-trip", planeMismatch == 0, $"{planeMismatch}/{tested}");
+        }
+
+        /// <summary>
+        /// A queen chaining through her own territory must keep all eight directions.
+        /// The destination here is reachable only by turning a corner mid-chain, so it is
+        /// absent unless the orthogonal slides are present.
+        /// </summary>
+        static void QueenChainsOrthogonally()
+        {
+            Console.WriteLine("queen chains in all eight directions");
+
+            var s = new SimState(5, 6);
+            s.currentPlayer = PieceColor.White;
+            s.phaseOne = true;
+            s.blackInitialStonePending = false;
+
+            s.squares[0, 0] = new SimPiece { color = PieceColor.White, type = PieceType.Queen };
+            s.squares[4, 0] = new SimPiece { color = PieceColor.White, type = PieceType.King };
+            s.squares[4, 5] = new SimPiece { color = PieceColor.Black, type = PieceType.King };
+            s.whiteKingSquare = new Vector2Int(4, 0);
+            s.blackKingSquare = new Vector2Int(4, 5);
+
+            // Own territory over squares (0,1), (1,1) and (2,1): every corner of each.
+            foreach (var pt in new[]
+                     {
+                         new Vector2Int(0,1), new Vector2Int(1,1), new Vector2Int(0,2), new Vector2Int(1,2),
+                         new Vector2Int(2,1), new Vector2Int(2,2), new Vector2Int(3,1), new Vector2Int(3,2)
+                     })
+                s.stones[pt.x, pt.y] = SimStoneColor.White;
+
+            var moves = SimRules.GenerateAllLegalFullTurns(s);
+
+            bool Has(int fx, int fy, int tx, int ty)
+            {
+                foreach (var m in moves)
+                    if (m.chessMove.HasValue
+                        && m.chessMove.Value.from == new Vector2Int(fx, fy)
+                        && m.chessMove.Value.to == new Vector2Int(tx, ty)) return true;
+                return false;
+            }
+
+            // (2,1) is not on any queen line from (0,0), so it can only come from a chain that
+            // steps up to (0,1) and then slides sideways.
+            Check("reaches a square only a cornering chain can reach", Has(0, 0, 2, 1));
+
+            // Sanity: the ordinary first hop is still there.
+            Check("still offers the plain first hop", Has(0, 0, 0, 1));
         }
 
         static void Check(string name, bool ok, string detail = "")

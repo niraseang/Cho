@@ -2586,6 +2586,11 @@ public static class SimRules
                 break;
 
             case PieceType.Queen:
+                // Was a copy of the Bishop case and missing the four orthogonals, so a queen
+                // chaining through territory moved like a bishop on every hop after the first.
+                // GenerateFirstHopChainSteps always gave her all eight, so only continuations
+                // were affected.
+                TryAddSlide(1, 0); TryAddSlide(-1, 0); TryAddSlide(0, 1); TryAddSlide(0, -1);
                 TryAddSlide(1, 1); TryAddSlide(-1, 1); TryAddSlide(1, -1); TryAddSlide(-1, -1);
                 break;
 

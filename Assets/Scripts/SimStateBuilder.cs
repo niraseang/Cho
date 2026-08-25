@@ -132,23 +132,41 @@ public static class SimStateBuilder
             if (s.enPassantPawnSquare.HasValue) break;
         }
 
-        // For now we do NOT read private/internal flow flags from GameController.
-        // Those will be threaded via AI logic when we wire in SimRules/SimSearch.
-        // Leave these at their SimState constructor defaults:
-        //   s.phaseOne
-        //   s.blackInitialStonePending
-        //   s.waitingForTerritoryClick
-        //   s.waitingForPawnStoneChoice
-        //   s.lastMovedSquare
-        //   s.pendingPawnCornerOptions
-        //   s.enPassantPawnSquare
-        //   castling rights
-        //   gameOver / winner
+        // --- mid-turn flow state ---
+        // The snapshot has to know which decision is pending, or the AI cannot tell a main
+        // stone from a forced territory removal and needs a separate code path per phase.
+        s.phaseOne = gc.PhaseOne;
+        s.waitingForTerritoryClick = gc.WaitingForTerritoryClick;
+        s.waitingForPawnStoneChoice = gc.WaitingForPawnStoneChoice;
+        s.lastMovedSquare = gc.LastMovedSquare;
+        s.blackInitialStonePending = false;   // SimRules does not model the opening stone
+
+        // --- castling rights ---
+        // The live game has no flags for these; it decides castling from hasMoved on the king
+        // and the corner rooks, so derive them the same way rather than leaving them all true.
+        s.whiteCanCastleKingSide  = CanCastle(s, PieceColor.White, bs - 1, 0);
+        s.whiteCanCastleQueenSide = CanCastle(s, PieceColor.White, 0, 0);
+        s.blackCanCastleKingSide  = CanCastle(s, PieceColor.Black, bs - 1, bs - 1);
+        s.blackCanCastleQueenSide = CanCastle(s, PieceColor.Black, 0, bs - 1);
 
         // Superko history is shared by reference, not copied: the AI's root move list has to be
         // filtered against the same positions the live game has actually reached.
         s.positionHistory = gc.PositionHistory;
 
         return s;
+    }
+
+    static bool CanCastle(SimState s, PieceColor color, int rookX, int rank)
+    {
+        var kingSq = color == PieceColor.White ? s.whiteKingSquare : s.blackKingSquare;
+        if (!kingSq.HasValue) return false;
+
+        var king = s.squares[kingSq.Value.x, kingSq.Value.y];
+        if (!king.HasValue || king.Value.hasMoved) return false;
+
+        if (rookX < 0 || rookX >= s.boardWidth || rank < 0 || rank >= s.boardHeight) return false;
+        var rook = s.squares[rookX, rank];
+        return rook.HasValue && rook.Value.type == PieceType.Rook
+            && rook.Value.color == color && !rook.Value.hasMoved;
     }
 }
