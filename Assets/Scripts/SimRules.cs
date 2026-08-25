@@ -13,6 +13,11 @@ public static class SimRules
     // Keep weights small so material remains dominant.
     // Superko: a main stone may not recreate a board position already seen this game.
     // Requires SimState.positionHistory to be non-null; toggled off for A/B measurement.
+    // No-progress draw: player turns in a row with no capture and no net change to either
+    // side's stone count. 50 is one turn each way for 25 rounds; chess's own 50-move rule is
+    // 100 plies, so raise this to 100 if you want the closer analogue. Tune with the harness.
+    public static int noProgressTurnLimit = 50;
+
     public static bool superkoEnabled = true;
 
     // Whether the search also filters superko at interior nodes.
@@ -345,6 +350,9 @@ public static class SimRules
             if (!turn.mainStone.HasValue) return;
             ApplyGoMainStone(state, turn.mainStone.Value);
 
+            // No-progress rule, measured before the handover so it sees the player who moved.
+            UpdateNoProgressCounter(state, state.currentPlayer);
+
             // End the turn: next player starts in phase one (chess).
             state.currentPlayer = (state.currentPlayer == PieceColor.White)
                 ? PieceColor.Black
@@ -418,6 +426,57 @@ public static class SimRules
                 state.waitingForPawnStoneChoice = true;
                 return;
             }
+        }
+    }
+
+    public static SimProgressCounts CountProgressMaterial(SimState state)
+    {
+        var c = new SimProgressCounts { valid = true };
+
+        for (int ix = 0; ix < state.intersectionSize; ix++)
+            for (int iy = 0; iy < state.intersectionSize; iy++)
+            {
+                var st = state.stones[ix, iy];
+                if (st == SimStoneColor.White) c.whiteStones++;
+                else if (st == SimStoneColor.Black) c.blackStones++;
+            }
+
+        for (int x = 0; x < state.boardSize; x++)
+            for (int y = 0; y < state.boardSize; y++)
+            {
+                var sp = state.squares[x, y];
+                if (!sp.HasValue) continue;
+                if (sp.Value.color == PieceColor.White) c.whitePieces++;
+                else c.blackPieces++;
+            }
+
+        return c;
+    }
+
+    /// <summary>
+    /// Advances the no-progress counter for the player who just finished a turn.
+    ///
+    /// Progress means a capture of any kind or a net change to either side's stone count.
+    /// Piece counts cover chess captures and surround captures; stone counts cover Go captures
+    /// and territory removals. Comparing against the same player's *previous* turn end is what
+    /// makes the boundary-shuffle case work: over one full cycle each side places one stone and
+    /// loses one, so the counts return to where they were.
+    /// </summary>
+    static void UpdateNoProgressCounter(SimState state, PieceColor justMoved)
+    {
+        var now = CountProgressMaterial(state);
+        var prev = (justMoved == PieceColor.White) ? state.progressAfterWhiteTurn : state.progressAfterBlackTurn;
+
+        if (now.Matches(prev)) state.noProgressTurns++;
+        else state.noProgressTurns = 0;
+
+        if (justMoved == PieceColor.White) state.progressAfterWhiteTurn = now;
+        else state.progressAfterBlackTurn = now;
+
+        if (noProgressTurnLimit > 0 && state.noProgressTurns >= noProgressTurnLimit && !state.gameOver)
+        {
+            state.gameOver = true;
+            state.winner = null; // draw
         }
     }
 
@@ -954,6 +1013,11 @@ public static class SimRules
 
     public static int Evaluate(SimState state)
     {
+        // A drawn game is worth exactly nothing to either side. Without this the search reads
+        // a no-progress draw as whatever the material happened to be, and will walk into a
+        // drawn position while it is ahead.
+        if (state != null && state.gameOver && !state.winner.HasValue) return 0;
+
         // Terminal: king capture is the only win condition.
         // Return a huge score so search always prioritizes king captures / avoids losing king.
         bool whiteHasKing = HasKing(state, PieceColor.White);

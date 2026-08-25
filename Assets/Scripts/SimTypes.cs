@@ -98,6 +98,23 @@ public class SimPositionHistory
     }
 }
 
+/// <summary>
+/// Material snapshot used by the no-progress rule. Compared against the same player's
+/// previous turn end - comparing against whichever player moved last does not work,
+/// because a boundary shuffle leaves the counts different on alternating turns even
+/// though nothing is changing over a full cycle.
+/// </summary>
+public struct SimProgressCounts
+{
+    public bool valid;
+    public int whiteStones, blackStones, whitePieces, blackPieces;
+
+    public bool Matches(SimProgressCounts o) =>
+        valid && o.valid &&
+        whiteStones == o.whiteStones && blackStones == o.blackStones &&
+        whitePieces == o.whitePieces && blackPieces == o.blackPieces;
+}
+
 public class SimState
 {
     // Dimensions (copy from BoardManager)
@@ -149,6 +166,12 @@ public class SimState
     // Board positions already seen this game. Null disables the superko restriction,
     // which is what most unit-style uses of SimState want.
     public SimPositionHistory positionHistory;
+
+    // No-progress rule: consecutive player turns with no capture and no net change to
+    // either side's stone count. Reaching SimRules.noProgressTurnLimit is a draw.
+    public int noProgressTurns;
+    public SimProgressCounts progressAfterWhiteTurn;
+    public SimProgressCounts progressAfterBlackTurn;
 
     // Terminal state info
     public bool gameOver;
@@ -209,6 +232,10 @@ public class SimState
 
             // Shared by reference on purpose - see SimPositionHistory.
             positionHistory = this.positionHistory,
+
+            noProgressTurns = this.noProgressTurns,
+            progressAfterWhiteTurn = this.progressAfterWhiteTurn,
+            progressAfterBlackTurn = this.progressAfterBlackTurn,
 
             gameOver = this.gameOver,
             winner = this.winner

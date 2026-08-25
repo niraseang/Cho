@@ -288,7 +288,9 @@ namespace ChoSim
             else if (s.gameOver)
             {
                 outcome = GameOutcome.Draw;
-                reason = "game over, no winner";
+                reason = s.noProgressTurns >= SimRules.noProgressTurnLimit
+                    ? $"no progress for {s.noProgressTurns} turns"
+                    : "game over, no winner";
             }
             else
             {

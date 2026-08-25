@@ -95,6 +95,15 @@ public class GameController : MonoBehaviour
     public bool gameOver = false;
     public PieceColor winner = PieceColor.White;
 
+    // Set alongside gameOver when the game ended in a draw, since `winner` cannot express one.
+    public bool isDraw = false;
+
+    // No-progress rule: player turns in a row with no capture and no net change to either
+    // side's stone count. Limit lives on SimRules so both implementations share it.
+    int _noProgressTurns;
+    SimProgressCounts _progressAfterWhite;
+    SimProgressCounts _progressAfterBlack;
+
     // Simple-ko: intersection forbidden for the NEXT normal Go move (phase-two main placement).
     // This applies to normal phase-two placements and the initial black stone,
     // but NOT to extra pawn bonus stone placements.
@@ -142,6 +151,12 @@ public class GameController : MonoBehaviour
 
         PositionHistory.Clear();
         RecordPositionForSuperko();
+
+        gameOver = false;
+        isDraw = false;
+        _noProgressTurns = 0;
+        _progressAfterWhite = default;
+        _progressAfterBlack = default;
 
         // If Black is AI at start and the special stone is pending, place it immediately.
         if (blackIsAI && blackInitialStonePending)
@@ -481,6 +496,8 @@ public class GameController : MonoBehaviour
                 // Superko: this placement may not recreate a position already seen this game.
                 if (ViolatesSuperko(nearest.x, nearest.y))
                 {
+                    // Silent rejection is indistinguishable from a dead click, so say why.
+                    Debug.Log($"[GameController] Superko: playing ({nearest.x}, {nearest.y}) would repeat an earlier position.");
                     return;
                 }
 
@@ -1515,6 +1532,9 @@ public class GameController : MonoBehaviour
         // Finish logging the chess move token with the associated Go delta for this turn.
         CommitPendingMoveDebugTokenWithGoDelta();
 
+        // No-progress rule, measured before the handover so it sees the player who just moved.
+        UpdateNoProgressCounter(currentPlayer);
+
         currentPlayer = currentPlayer == PieceColor.White ? PieceColor.Black : PieceColor.White;
         phaseOne = true;
         selectedPiece = null;
@@ -1533,6 +1553,33 @@ public class GameController : MonoBehaviour
             {
                 p.justDoubleStepped = false;
             }
+        }
+    }
+
+    // Progress means a capture of any kind, or a net change to either side's stone count.
+    // Compared against the same player's previous turn end: over one full boundary-shuffle
+    // cycle each side places a stone and loses one, so the counts come back to where they were.
+    void UpdateNoProgressCounter(PieceColor justMoved)
+    {
+        if (boardManager == null) return;
+
+        var snapshot = SimStateBuilder.FromLiveGame(this, boardManager);
+        if (snapshot == null) return;
+
+        var now = SimRules.CountProgressMaterial(snapshot);
+        var prev = (justMoved == PieceColor.White) ? _progressAfterWhite : _progressAfterBlack;
+
+        if (now.Matches(prev)) _noProgressTurns++;
+        else _noProgressTurns = 0;
+
+        if (justMoved == PieceColor.White) _progressAfterWhite = now;
+        else _progressAfterBlack = now;
+
+        if (SimRules.noProgressTurnLimit > 0 && _noProgressTurns >= SimRules.noProgressTurnLimit && !gameOver)
+        {
+            gameOver = true;
+            isDraw = true;
+            Debug.Log($"[GameController] Draw: {_noProgressTurns} turns with no capture and no change in stone counts.");
         }
     }
 
