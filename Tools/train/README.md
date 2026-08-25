@@ -108,3 +108,23 @@ are all covered by a single check.
 `SimMcts` talks to `ISimEvaluator`, not to ONNX. The runtime dependency lives here in
 ChoSim only, so the Unity assembly stays clean and could back the same interface with
 Sentis instead.
+
+## Measured so far (5x6 board)
+
+A network trained on just 40 self-play games, against uniform-prior MCTS at equal
+simulation counts:
+
+| simulations | nn vs mcts | significance |
+|---|---|---|
+| 100 | **69.0%** (207-93), +139 Elo | z = 6.58, p = 4.6e-11 |
+| 400 | 55.0% (22-18) | z = 0.63, p = 0.53 — not significant |
+
+The policy head earns its keep where simulations are scarce and stops mattering as they
+grow, which is the expected shape for a prior: with enough visits, uniform priors find
+good moves anyway.
+
+Neither beats the alpha-beta engine yet — `search:3` wins comfortably against both.
+
+Note on sample sizes: the 100-simulation result first appeared as 85% over 20 games and
+settled at 69% over 300. Twenty games is not a measurement. `match` is deterministic at
+fixed depth, so a larger run costs only wall-clock.
