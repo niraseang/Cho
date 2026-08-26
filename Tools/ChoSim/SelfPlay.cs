@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using UnityEngine;
 
 namespace ChoSim
@@ -152,8 +153,14 @@ namespace ChoSim
 
         public static int Run(int games, int sims, Variant variant, string outPath,
                               int seed, int openingTemperatureDecisions, bool quiet,
-                              string modelPath = null)
+                              string modelPath = null, int workers = 1, int batchSize = 32)
         {
+            if (workers > 1 && !string.IsNullOrEmpty(modelPath))
+            {
+                return RunParallel(games, sims, variant, outPath, seed,
+                                   openingTemperatureDecisions, quiet, modelPath, workers, batchSize);
+            }
+
             Positions.ApplyVariantRules(variant);
 
             // Without a network here, every generation would train on data from the same
@@ -249,6 +256,132 @@ namespace ChoSim
             Console.WriteLine($"{new FileInfo(outPath).Length / 1024.0:F0} KB " +
                               $"({new FileInfo(outPath).Length / (double)Math.Max(1, all.Count):F0} bytes/sample)");
             return all.Count;
+        }
+
+        /// <summary>
+        /// Many games at once, sharing one batched evaluator.
+        ///
+        /// The parallelism exists to keep the batch full, not to use more cores: workers spend
+        /// most of their time blocked inside Evaluate waiting for their row, so oversubscribing
+        /// threads relative to cores is deliberate.
+        /// </summary>
+        static int RunParallel(int games, int sims, Variant variant, string outPath, int seed,
+                               int openingTemperatureDecisions, bool quiet, string modelPath,
+                               int workers, int batchSize)
+        {
+            Positions.ApplyVariantRules(variant);
+
+            var shape = Positions.Create(variant);
+            using var evaluator = new BatchedEvaluator(modelPath, SimFeatures.PlaneCount,
+                                                       shape.intersectionHeight,
+                                                       shape.intersectionWidth,
+                                                       maxBatch: batchSize);
+
+            Console.WriteLine($"self-play guided by {modelPath} " +
+                              $"({workers} workers, batches up to {batchSize})");
+
+            // Indexed by game so the output file is identical regardless of completion order.
+            var perGame = new List<Sample>[games];
+            int decisive = 0;
+            int next = -1;
+
+            void Worker()
+            {
+                while (true)
+                {
+                    int g = Interlocked.Increment(ref next);
+                    if (g >= games) return;
+
+                    var samples = PlayOne(g, sims, variant, seed, openingTemperatureDecisions,
+                                          evaluator, out bool wasDecisive);
+                    perGame[g] = samples;
+                    if (wasDecisive) Interlocked.Increment(ref decisive);
+                }
+            }
+
+            var threads = new Thread[workers];
+            for (int i = 0; i < workers; i++)
+            {
+                threads[i] = new Thread(Worker) { IsBackground = true };
+                threads[i].Start();
+            }
+            foreach (var t in threads) t.Join();
+
+            var all = new List<Sample>();
+            foreach (var g in perGame) if (g != null) all.AddRange(g);
+
+            Write(outPath, all, variant);
+
+            Console.WriteLine();
+            Console.WriteLine($"{all.Count:N0} samples from {games} games ({decisive} decisive) -> {outPath}");
+            Console.WriteLine($"batches: {evaluator.Batches:N0}, mean size {evaluator.MeanBatchSize:F1}, " +
+                              $"{evaluator.Evaluations:N0} evaluations");
+            return all.Count;
+        }
+
+        /// <summary>One self-play game. Thread-safe: SimRules and SimMcts keep their scratch
+        /// state in [ThreadStatic] fields, so concurrent games do not interfere.</summary>
+        static List<Sample> PlayOne(int g, int sims, Variant variant, int seed,
+                                    int openingTemperatureDecisions, ISimEvaluator evaluator,
+                                    out bool decisive)
+        {
+            var samples = new List<Sample>();
+            var s = Positions.Create(variant);
+            int decisions = 0;
+
+            while (!s.gameOver && decisions < 1200)
+            {
+                var legal = SimRules.GenerateAllLegalFullTurns(s);
+                if (legal == null || legal.Count == 0) break;
+
+                var cfg = new SimMcts.Config
+                {
+                    simulations = sims,
+                    seed = seed * 7919 + g * 131 + decisions,
+                    temperature = decisions < openingTemperatureDecisions ? 1f : 0f,
+                    dirichletWeight = 0.25f,
+                    dirichletAlpha = 0.5f,
+                    evaluator = evaluator
+                };
+
+                var move = SimMcts.Search(s, cfg);
+
+                if (SimMcts.LastRootMoves != null && SimMcts.LastRootVisits != null)
+                {
+                    int n = SimMcts.LastRootMoves.Length;
+                    var idx = new int[n];
+                    var vis = new int[n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        idx[i] = SimFeatures.PolicyIndex(s, SimMcts.LastRootMoves[i]);
+                        vis[i] = SimMcts.LastRootVisits[i];
+                    }
+
+                    samples.Add(new Sample
+                    {
+                        Position = PositionCodec.Encode(s),
+                        PolicyIndex = idx,
+                        PolicyVisits = vis,
+                        Mover = s.currentPlayer
+                    });
+                }
+
+                var before = s.currentPlayer;
+                SimRules.ApplyFullTurn(s, move);
+                if (s.currentPlayer != before)
+                    s.positionHistory?.Push(SimZobrist.ComputeBoardHash(s));
+
+                decisions++;
+            }
+
+            float whiteResult = 0f;
+            decisive = s.gameOver && s.winner.HasValue;
+            if (decisive) whiteResult = s.winner.Value == PieceColor.White ? 1f : -1f;
+
+            foreach (var sample in samples)
+                sample.Value = sample.Mover == PieceColor.White ? whiteResult : -whiteResult;
+
+            return samples;
         }
 
         static void Write(string path, List<Sample> samples, Variant variant)

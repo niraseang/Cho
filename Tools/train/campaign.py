@@ -105,7 +105,9 @@ class Campaign:
                "--games", str(self.a.games), "--sims", str(self.a.sims),
                "--out", out, "--seed", str(1000 + gen), "--quiet"]
         if self.state["best_onnx"]:
-            cmd += ["--model", self.state["best_onnx"]]
+            # Batched self-play needs a network to batch; generation 0 has none.
+            cmd += ["--model", self.state["best_onnx"],
+                    "--workers", str(self.a.workers), "--batch", str(self.a.batch)]
 
         text = self.run(cmd)
         tail = [l for l in text.strip().splitlines() if "samples from" in l]
@@ -117,7 +119,7 @@ class Campaign:
         cmd = [PY, os.path.join(HERE, "train.py"),
                "--data", *self.replay_files(),
                "--epochs", str(self.a.epochs), "--lr", str(self.a.lr),
-               "--out", pt]
+               "--batch", str(self.a.train_batch), "--out", pt]
         if self.state["best_pt"]:
             cmd += ["--init", self.state["best_pt"]]
 
@@ -207,7 +209,7 @@ class Campaign:
 
         self.log(f"campaign starting at generation {self.state['generation']} | "
                  f"{self.a.games} games x {self.a.sims} sims, buffer {self.a.buffer}, "
-                 f"promote at {self.a.promote:.0%}")
+                 f"promote at {self.a.promote:.0%}, {self.a.workers} workers")
 
         done = 0
         while not _stop and (self.a.generations == 0 or done < self.a.generations):
@@ -230,6 +232,10 @@ def main():
     ap.add_argument("--epochs", type=int, default=int(os.environ.get("EPOCHS", 25)))
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--buffer", type=int, default=6, help="generations of data to train on")
+    ap.add_argument("--workers", type=int, default=48,
+                    help="games played concurrently, feeding one batched evaluator")
+    ap.add_argument("--batch", type=int, default=64, help="max inference batch")
+    ap.add_argument("--train-batch", type=int, dest="train_batch", default=256)
     ap.add_argument("--gate-games", type=int, default=100)
     ap.add_argument("--promote", type=float, default=0.55)
     ap.add_argument("--variant", default="small")

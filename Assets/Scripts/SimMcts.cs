@@ -58,12 +58,16 @@ public static class SimMcts
         public double MeanValue => visits == 0 ? 0.0 : valueSum / visits;
     }
 
-    /// <summary>Nodes expanded during the most recent Search call.</summary>
-    public static long NodesExpanded;
+    // These report the last Search on the CALLING thread. They must be [ThreadStatic]:
+    // batched self-play runs many games concurrently, and self-play reads LastRootVisits to
+    // build its policy target - shared, one game would silently record another game's search.
 
-    /// <summary>Visit counts for the root's children after the last Search, for policy targets.</summary>
-    public static int[] LastRootVisits;
-    public static SimTurn[] LastRootMoves;
+    /// <summary>Nodes expanded during the most recent Search call on this thread.</summary>
+    [ThreadStatic] public static long NodesExpanded;
+
+    /// <summary>Visit counts for the root's children after this thread's last Search.</summary>
+    [ThreadStatic] public static int[] LastRootVisits;
+    [ThreadStatic] public static SimTurn[] LastRootMoves;
 
     public static SimTurn Search(SimState root, Config cfg)
     {

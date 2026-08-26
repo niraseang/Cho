@@ -1,6 +1,12 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 
+/// <summary>
+/// Alpha-beta search. NOT thread-safe: the transposition table below is shared and unguarded.
+/// Only ever call this from one thread at a time. SimMcts and SimRules are safe to run
+/// concurrently (their scratch state is [ThreadStatic]); this class is deliberately not,
+/// because nothing parallel needs it.
+/// </summary>
 public static class SimSearch
 {
     // Quiescence depth cap to prevent capture-sequence explosions.

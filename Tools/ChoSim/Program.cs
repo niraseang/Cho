@@ -53,8 +53,10 @@ namespace ChoSim
              Search from a position at depths 1..D. Reports nodes, nodes/sec, best move.
 
   selfplay   [--games G] [--sims S] [--out FILE] [--seed S] [--temp N] [--quiet]
-             [--model FILE]
-             Generate training data with MCTS. --model guides it with an exported
+             [--model FILE] [--workers N] [--batch N]
+             Generate training data with MCTS. --workers plays that many games at
+             once, pooling their network calls into batches, which is where the
+             throughput comes from. Requires --model. --model guides it with an exported
              network; without one it uses uniform priors and the static eval, which
              is only useful for the first generation. --temp is how many opening
              decisions are sampled by visit count rather than played greedily.
@@ -291,7 +293,9 @@ namespace ChoSim
                 seed: a.Int("seed", 1),
                 openingTemperatureDecisions: a.Int("temp", 12),
                 quiet: a.Bool("quiet", false),
-                modelPath: a.Str("model", "")) > 0 ? 0 : 1;
+                modelPath: a.Str("model", ""),
+                workers: a.Int("workers", 1),
+                batchSize: a.Int("batch", 32)) > 0 ? 0 : 1;
         }
 
         static void Match(Args a)
@@ -384,6 +388,9 @@ namespace ChoSim
                 ("Generate (root path, superko)",      () => SimRules.GenerateAllLegalFullTurns(s, true)),
                 ("SimState.DeepCopy",         () => s.DeepCopy()),
                 ("SimZobrist.ComputeHash",    () => SimZobrist.ComputeHash(s)),
+                ("SimFeatures.Encode",        () => SimFeatures.Encode(s, _encodeBuf ??= new float[SimFeatures.TensorSize(s)])),
+                ("SimFeatures.LibertyMap",    () => SimFeatures.LibertyMap(s)),
+                ("ApplyFullTurn (copy+apply)", () => { var c = s.DeepCopy(); var mv = SimRules.GenerateAllLegalFullTurns(c, false); if (mv.Count > 0) SimRules.ApplyFullTurn(c, mv[0]); }),
             };
 
             SimRules.mobilityWeight = 2;
@@ -425,6 +432,8 @@ namespace ChoSim
                             + $"= {persec:N0} sims/sec ({SimMcts.NodesExpanded:N0} nodes expanded)");
             Console.WriteLine($"      leaf cost budget for a network: {1e6 / persec:F1} us/sim at current speed");
         }
+
+        static float[] _encodeBuf;
 
         static void Time(string label, int iters, Action f)
         {

@@ -1934,11 +1934,16 @@ public static class SimRules
     // Outputs:
     //  - libs: number of unique liberties
     //  - hasLibertyOtherThanTarget: true if there exists a liberty that is NOT targetLibIdx
-    static int[] _goVisitStamp;
-    static int[] _goLibStamp;
-    static int[] _goStack;
-    static int _goStamp;
-    static int _goLibToken;
+    //
+    // [System.ThreadStatic] because these are mutated during evaluation. Batched self-play runs many
+    // games on many threads through this same code; sharing these buffers would not crash, it
+    // would silently produce wrong liberty counts - in the path that decides captures.
+    // Each thread gets its own set, allocated lazily by EnsureGoBuffers.
+    [System.ThreadStatic] static int[] _goVisitStamp;
+    [System.ThreadStatic] static int[] _goLibStamp;
+    [System.ThreadStatic] static int[] _goStack;
+    [System.ThreadStatic] static int _goStamp;
+    [System.ThreadStatic] static int _goLibToken;
 
     static void EnsureGoBuffers(int w, int h)
     {
